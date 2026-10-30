@@ -1,8 +1,9 @@
-/* argspec.h — CLI 参数 → D-Bus 类型编解码
- * 支持: i/s/b/d/x(64位)/y/u/n/q/t、ay(逗号分隔 hex 字节)、as(JSON 数组)、
- *       a{sv}(JSON 对象)、v(自动)、a{i,u,x,d}(逗号数值, 通用扩展)
- * 位集枚举: "E_A|E_B" 语法 → i32 按位 OR; 数值分量直接 OR,
- *           E_ 名分量因通用版未内置 HblmTypes 表 → 明确报错(README 差异清单)
+/* argspec.h — CLI argument → D-Bus type encoding/decoding
+ * Supported: i/s/b/d/x (64-bit)/y/u/n/q/t, ay (comma-separated hex bytes), as (JSON array),
+ *            a{sv} (JSON object), v (automatic), a{i,u,x,d} (comma-separated numbers, generic extension)
+ * Bitmask enums: "E_A|E_B" syntax → i32 bitwise OR; numeric components are ORed directly.
+ * E_-prefixed names return an explicit error because the generic version does not include
+ * the HblmTypes table (see differences in README).
  */
 #ifndef ODIN_ARGSPEC_H
 #define ODIN_ARGSPEC_H
@@ -10,17 +11,17 @@
 #include <dbus/dbus.h>
 #include <stddef.h>
 
-/* "E_A|E_B|1|2" → int32; 返回 0/-1(err 填原因) */
+/* "E_A|E_B|1|2" → int32; returns 0/-1 (reason is written to err) */
 int argspec_parse_bitset(const char *s, dbus_int32_t *out, char *err, size_t errsz);
 
-/* 按签名把一个 CLI 字符串编码为一个完整 D-Bus 值并追加到 iter; 0/-1 */
+/* Encode a CLI string as one complete D-Bus value according to sig and append to iter; 0/-1 */
 int argspec_encode(DBusMessageIter *iter, const char *sig, const char *s,
                    char *err, size_t errsz);
 
-/* 无签名时的启发式推断, 返回静态签名字符串 */
+/* Heuristically infer the type when no signature is provided; returns a static signature string */
 const char *argspec_guess(const char *s);
 
-/* 值文本 → dumpfmt 之外的机器可读检测(JSON 容器) */
+/* Detect machine-readable JSON containers in value text, in addition to dumpfmt */
 int argspec_is_json_object(const char *s);
 int argspec_is_json_array(const char *s);
 

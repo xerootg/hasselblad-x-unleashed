@@ -1,45 +1,50 @@
-/* imgprep.c — 高质量打印图像预处理实现（libjpeg-turbo + 3FR）
+/* imgprep.c — High-quality print image preprocessing (libjpeg-turbo + 3FR)
  *
- * HQ 管线（默认，两级缩放，内存友好，绝不全尺寸展开 100MP 原图）：
- *   1) jpeg_read_header 前挂 save_markers 抓 APP1/Exif（Orientation +
- *      ColorSpace）、APP2/ICC、APP14/Adobe
- *   2) DCT 缩放档选择：旋转后两维均 ≥ 2×目标 的最大缩放档（两级缩放
- *      第一级；第二级 Lanczos3 保证精确目标尺寸 + 抗锯齿预滤波）。
- *      注：§18 裁切不改变该规则（仍按全图尺寸定档）——按裁切窗提档会
- *      把窄裁切推向 den=1 全尺寸解码（100MP≈300MB RGB），内存不安全；
- *      重裁切的分辨率缺口交给 Lanczos 核上采样。
- *   3) 解码为 RGB → 旋转（EXIF 自动 或 显式 0/90/180/270 覆盖，§18）→
- *      用户裁切窗（归一化，旋转后坐标系）→ 按目标宽高比窗内居中裁切
- *   4) Lanczos3（a=3）重采样：核宽随缩放因子展宽（等效预滤波，抑制
- *      下采样混叠/摩尔纹），边界 clamp，两级浮点精度（见 resize_lanczos3）
- *   5) 色彩：EXIF ColorSpace=1 → sRGB 直通；=2/未标 且 含 AdobeRGB 特征
- *      （ICC "Adobe RGB" 或 APP14 Adobe 标记）→ AdobeRGB→sRGB（矩阵实现，
- *      公式来源见 adobergb_to_srgb）
- *   6) unsharp mask 锐化（σ=1.0px@300dpi，amount 0.35，阈值 0）
- *   7) 编码 JPEG：默认 q95、4:4:4（无色度抽样）、300dpi 元数据
+ * HQ pipeline (default, two-stage scaling, memory-efficient; never expand a 100MP original
+ * to full size):
+ *   1) Before jpeg_read_header, save APP1/Exif markers (Orientation + ColorSpace), APP2/ICC,
+ *      and APP14/Adobe.
+ *   2) Choose DCT scale: the largest scale where both rotated dimensions are ≥2× target
+ *      (first of two scaling stages; second uses Lanczos3 for exact target size + anti-alias
+ *      prefiltering). Note: §18 cropping does not change this rule (scale based on full
+ *      image). Choosing scale based on crop window could force a narrow crop to den=1
+ *      full-resolution decode (100MP≈300MB RGB), which is unsafe; Lanczos upsampling handles
+ *      resolution loss from heavy crops.
+ *   3) Decode to RGB → rotate (EXIF auto or explicit 0/90/180/270 override, §18) → apply
+ *      user crop window (normalized, rotated coordinate system) → center-crop within window
+ *      to target aspect ratio.
+ *   4) Lanczos3 (a=3) resampling: widen kernel according to scale factor (equivalent to
+ *      prefiltering, reduces downsampling aliasing/moiré), clamp edges, two-stage float
+ *      precision (see resize_lanczos3).
+ *   5) Color: pass through as sRGB for EXIF ColorSpace=1; for =2/untagged with AdobeRGB
+ *      indicators (ICC "Adobe RGB" or APP14 Adobe marker), convert AdobeRGB→sRGB using a
+ *      matrix (formula source in adobergb_to_srgb).
+ *   6) Apply unsharp mask (σ=1.0px@300dpi, amount 0.35, threshold 0).
+ *   7) Encode JPEG: default q95, 4:4:4 (no chroma subsampling), 300dpi metadata.
  *
- * FAST 管线（IMGPREP_F_FAST，旧版行为）：DCT 档位 ≥ 目标即止 +
- *   Catmull-Rom 双三次、默认 q92、4:2:2、无锐化、无色彩转换。
+ * FAST pipeline (IMGPREP_F_FAST, legacy behavior): stop at the first DCT scale ≥ target +
+ *   Catmull-Rom bicubic, default q92, 4:2:2, no sharpening or color conversion.
  *
- * 目标尺寸一律参数化：调用方按纸型物理尺寸 × 打印机分辨率传入；
- *   0,0 仅兜底 1200×1800 系（通用打印机程序，不硬编码打印机属性）。
+ * Target dimensions are always parameterized: caller passes media physical size × printer
+ * resolution; 0,0 uses the 1200×1800 family as fallback only (general-purpose printer
+ * program; no hard-coded printer attributes).
  */
 #include "imgprep.h"
 #include "3fr.h"
 
-#include <stdio.h> /* jpeglib.h 需要 FILE 先声明 */
+#include <stdio.h> /* jpeglib.h requires FILE to be declared first */
 #include <jpeglib.h>
 #include <jerror.h>
 #include <math.h>
 #include <setjmp.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h> /* strcasecmp(imgprep_probe 扩展名分流) */
+#include <strings.h> /* strcasecmp (extension dispatch in imgprep_probe) */
 
-/* 内部 flag：来自 3FR preview */
+/* Implementation details. */
 #define IMGPREP_IF_FROM3FR 8u
 
-/* ---------------- libjpeg 错误处理（longjmp 跳出） ---------------- */
+/* Implementation details. */
 
 typedef struct {
     struct jpeg_error_mgr pub;
@@ -57,31 +62,31 @@ static void jerr_noop(j_common_ptr c) { (void)c; }
 const char *imgprep_strerror(int err)
 {
     switch (err) {
-    case IMGPREP_OK:       return "成功";
-    case IMGPREP_E_IO:     return "文件读写失败";
-    case IMGPREP_E_DECODE: return "JPEG 解码失败（文件损坏或非 JPEG）";
-    case IMGPREP_E_MEM:    return "内存不足";
-    case IMGPREP_E_ENCODE: return "JPEG 编码失败";
-    case IMGPREP_E_ARG:    return "参数非法";
-    case IMGPREP_E_SRC:    return "输入源不可用（3FR 无 JPEG preview 等）";
-    default:               return "未知错误";
+    case IMGPREP_OK:       return "success";
+    case IMGPREP_E_IO:     return "file read/write failed";
+    case IMGPREP_E_DECODE: return "JPEG decode failed (corrupt file or not JPEG)";
+    case IMGPREP_E_MEM:    return "out of memory";
+    case IMGPREP_E_ENCODE: return "JPEG encoding failed";
+    case IMGPREP_E_ARG:    return "invalid argument";
+    case IMGPREP_E_SRC:    return "input source unavailable (e.g. no JPEG preview in 3FR)";
+    default:               return "unknown error";
     }
 }
 
-/* ---------------- EXIF 解析（Orientation + ColorSpace） ---------------- */
+/* ---------------- EXIF parsing (Orientation + ColorSpace) ---------------- */
 
-/* 在 APP1(Exif) 原始数据里解析 IFD0 的 0x0112 Orientation 与 0xA001
- * ColorSpace（1=sRGB，2=未标定；哈苏/Photoshop 导 AdobeRGB 时常为 2）。
- * 未找到的输出 0。 */
+/* Parse IFD0 tags 0x0112 Orientation and 0xA001 ColorSpace from raw APP1 (Exif) data
+ * (1=sRGB, 2=uncalibrated; often 2 when Hasselblad/Photoshop exports AdobeRGB).
+ * Set output to 0 when a tag is not found. */
 static void exif_parse(const unsigned char *d, unsigned len,
                        int *orientation, int *colorspace)
 {
     *orientation = 0;
     *colorspace = 0;
     if (len < 12 || memcmp(d, "Exif\0\0", 6) != 0) return;
-    const unsigned char *t = d + 6;             /* TIFF 头 */
+    const unsigned char *t = d + 6;             /* TIFF header */
     unsigned tlen = len - 6;
-    int be;                                      /* 字节序 */
+    int be;                                      /* Byte order */
     if (t[0] == 'I' && t[1] == 'I') be = 0;
     else if (t[0] == 'M' && t[1] == 'M') be = 1;
     else return;
@@ -90,18 +95,18 @@ static void exif_parse(const unsigned char *d, unsigned len,
     if (RD16(t + 2) != 42) return;
     unsigned off = (unsigned)RD32(t + 4);
     if (off + 2 > tlen) return;
-    int n = RD16(t + off);                       /* IFD0 条目数 */
+    int n = RD16(t + off);                       /* Number of IFD0 entries */
     for (int i = 0; i < n; i++) {
-        unsigned e = off + 2 + (unsigned)i * 12; /* 条目 12 字节 */
+        unsigned e = off + 2 + (unsigned)i * 12; /* 12 bytes per entry */
         if (e + 12 > tlen) break;
         int tag = RD16(t + e);
         int typ = RD16(t + e + 2);
         int cnt = RD32(t + e + 4);
-        if (typ != 3 || cnt < 1) continue;       /* 只要 SHORT */
-        int v = RD16(t + e + 8);                 /* 值内联在前 2 字节 */
+        if (typ != 3 || cnt < 1) continue;       /* SHORT only */
+        int v = RD16(t + e + 8);                 /* Value is inline in first 2 bytes */
         if (tag == 0x0112 && v >= 1 && v <= 8) *orientation = v;
         if (tag == 0xA001) {
-            /* 1=sRGB 2=未标定 0xFFFF=未指定 → 都归到"非 1"触发判定 */
+            /* 1=sRGB; 2=uncalibrated; 0xFFFF=unspecified → all become "not 1" for detection */
             *colorspace = (v == 1) ? 1 : ((v == 2) ? 2 : 0);
         }
     }
@@ -110,8 +115,8 @@ static void exif_parse(const unsigned char *d, unsigned len,
 }
 
 typedef struct {
-    int orient;      /* EXIF Orientation 1..8，0=无 */
-    int colorspace;  /* EXIF ColorSpace：1=sRGB 2=未标定 0=无 tag */
+    int orient;      /* EXIF Orientation 1..8; 0=none */
+    int colorspace;  /* EXIF ColorSpace: 1=sRGB, 2=uncalibrated, 0=no tag */
 } exif_info_t;
 
 static exif_info_t find_exif(struct jpeg_decompress_struct *c)
@@ -125,11 +130,11 @@ static exif_info_t find_exif(struct jpeg_decompress_struct *c)
     return ei;
 }
 
-/* AdobeRGB 特征检测（弱信号集合，配 EXIF ColorSpace 判定）：
- *  - APP2 ICC profile（"ICC_PROFILE\0"）内含 "Adobe RGB"/"AdobeRGB" 字串
- *    （真实 Adobe RGB(1998) ICC 的 desc 标签即含此串）
- *  - APP14 "Adobe" 标记（Photoshop 写出；sRGB 文件一般同时带
- *    EXIF ColorSpace=1，会被 cs==1 直通挡住；--nocm 为逃生开关） */
+/* Detect AdobeRGB indicators (weak signals combined with EXIF ColorSpace):
+ *  - APP2 ICC profile ("ICC_PROFILE\0") contains "Adobe RGB"/"AdobeRGB"
+ *    (the desc tag in a real Adobe RGB (1998) ICC contains this string)
+ *  - APP14 "Adobe" marker (written by Photoshop; sRGB files generally also have
+ *    EXIF ColorSpace=1 and bypass this via cs==1; --nocm is an escape hatch). */
 static int find_adobe_marker(struct jpeg_decompress_struct *c)
 {
     static const char *keys[] = { "Adobe RGB", "AdobeRGB", NULL };
@@ -137,7 +142,7 @@ static int find_adobe_marker(struct jpeg_decompress_struct *c)
         if (m->marker == JPEG_APP0 + 2 && m->data_length > 16
             && memcmp(m->data, "ICC_PROFILE", 11) == 0) {
             unsigned n = m->data_length;
-            if (n > 1024) n = 1024;              /* 只搜 profile 头部 */
+            if (n > 1024) n = 1024;              /* Search only the profile header */
             for (int k = 0; keys[k]; k++) {
                 size_t kl = strlen(keys[k]);
                 for (unsigned i = 0; i + kl <= n; i++)
@@ -151,29 +156,30 @@ static int find_adobe_marker(struct jpeg_decompress_struct *c)
     return 0;
 }
 
-/* ---------------- EXIF 方向变换 ---------------- */
+/* ---------------- EXIF orientation transforms ---------------- */
 
-/* 坐标映射表：orient 1..8 → src(x,y,w,h) → dst(dx,dy)，swap=输出宽高互换 */
+/* Coordinate map: orient 1..8 → src(x,y,w,h) → dst(dx,dy), swap=swap output width/height */
 static void orient_map(int o, int x, int y, int w, int h,
                        int *dx, int *dy)
 {
     switch (o) {
-    case 2:  *dx = w - 1 - x; *dy = y;         break; /* 左右镜像 */
+    case 2:  *dx = w - 1 - x; *dy = y;         break; /* Mirror left/right */
     case 3:  *dx = w - 1 - x; *dy = h - 1 - y; break; /* 180° */
-    case 4:  *dx = x;         *dy = h - 1 - y; break; /* 上下镜像 */
-    case 5:  *dx = y;         *dy = x;         break; /* 转置 */
-    case 6:  *dx = h - 1 - y; *dy = x;         break; /* 顺时针 90° */
-    case 7:  *dx = h - 1 - y; *dy = w - 1 - x; break; /* 反转置 */
-    case 8:  *dx = y;         *dy = w - 1 - x; break; /* 逆时针 90° */
-    default: *dx = x;         *dy = y;         break; /* 1 原样 */
+    case 4:  *dx = x;         *dy = h - 1 - y; break; /* Mirror top/bottom */
+    case 5:  *dx = y;         *dy = x;         break; /* Transpose */
+    case 6:  *dx = h - 1 - y; *dy = x;         break; /* Rotate 90° clockwise */
+    case 7:  *dx = h - 1 - y; *dy = w - 1 - x; break; /* Transverse */
+    case 8:  *dx = y;         *dy = w - 1 - x; break; /* Rotate 90° counterclockwise */
+    default: *dx = x;         *dy = y;         break; /* 1: unchanged */
     }
 }
 
-/* 在（已缩小的）缓冲上应用方向变换；返回新缓冲（原缓冲释放），输出尺寸回填 */
+/* Apply orientation transform to the (already scaled) buffer; return new buffer (free old
+ * buffer) and fill output dimensions. */
 static unsigned char *apply_orientation(unsigned char *src, int w, int h,
                                         int o, int *ow, int *oh)
 {
-    if (o <= 1) { /* 无需变换：直接沿用 */
+    if (o <= 1) { /* No transform needed; reuse buffer */
         *ow = w;
         *oh = h;
         return src;
@@ -195,7 +201,7 @@ static unsigned char *apply_orientation(unsigned char *src, int w, int h,
     return dst;
 }
 
-/* ---------------- Catmull-Rom 双三次重采样（FAST 管线，旧版） ---------------- */
+/* Implementation details. */
 
 static void cubic_w(double f, double w[4])
 {
@@ -211,14 +217,14 @@ static int clampei(int v, int lo, int hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-/* 从 src(w×h) 的 (cx,cy,cw,ch) 裁切窗重采样到 dst(tw×th) */
+/* Implementation details. */
 static void resize_bicubic(const unsigned char *src, int w, int h,
                            int cx, int cy, int cw, int ch,
                            unsigned char *dst, int tw, int th)
 {
     double xr = (double)cw / tw, yr = (double)ch / th;
     for (int ty = 0; ty < th; ty++) {
-        double sy0 = cy + (ty + 0.5) * yr - 0.5; /* 目标行中心映射回裁切窗 */
+        double sy0 = cy + (ty + 0.5) * yr - 0.5; /* Implementation details. */
         int syi = (int)floor(sy0);
         double fy = sy0 - syi;
         double wy[4];
@@ -248,24 +254,11 @@ static void resize_bicubic(const unsigned char *src, int w, int h,
     }
 }
 
-/* ---------------- Lanczos3 重采样（HQ 管线，两级缩放第二级） ---------------- */
+/* Implementation details. */
 
-/* 浮点实现与精度说明：
- *  - 核值 L(t) 用 double 计算（sin/π 解析式），按目标像素归一化后转
- *    float 存储：float32 权重相对误差 ~1e-7，对 8-bit 像素无可感影响。
- *  - 累加器 float：单级最多 ~98 taps（filter_scale 上限 16），像素值
- *    ≤255，逐项舍入误差 ~255×1e-7×98 ≈ 2.5e-3 LSB，远小于 0.5 LSB
- *    输出量化步——无需双精度累加/定点（定点 16.16 亦可达到 <0.1 LSB，
- *    但 float 在 Cortex-A53/A55 与 x86 均更快）。
- *  - 两遍分离（先横后纵），中间图为 uint8：中途多一次 ±0.5 LSB 量化，
- *    经第二级 ~20 taps 加权平均后端到端典型误差 < 1 LSB（相对 float
- *    中间图无可感差异），换取 1/4 中间内存（相机内存优先）。
- *  - 抗混叠预滤波：下采样时核按缩放因子 scale 展宽（半径 3×scale，
- *    权重 L(t/scale)），即 Lanczos 的面积归一化低通——这正是"带预
- *    滤波的正确核"；不做展宽的固定 6-tap Lanczos 在强缩小下会混叠。
- *  - 边界：源下标 clamp 到裁切窗边缘（等价边缘复制）。 */
+/* Implementation details. */
 #define LANCZOS_A 3.0
-#define LANCZOS_MAX_FS 16.0   /* filter_scale 上限（taps 封顶 ~98） */
+#define LANCZOS_MAX_FS 16.0   /* Implementation details. */
 
 static double lanczos_kernel(double t)
 {
@@ -277,31 +270,31 @@ static double lanczos_kernel(double t)
            / (M_PI * M_PI * t * t);
 }
 
-/* 每个目标像素的抽头（起点 + 权重） */
+/* Implementation details. */
 typedef struct {
-    int start;      /* 首源像素下标（相对裁切窗，可能越界→取时 clamp） */
+    int start;      /* Implementation details. */
     int taps;
-    float *w;       /* 指向共享权重池的连续段 */
+    float *w;       /* Implementation details. */
 } lrow_t;
 
-/* 生成 src_len→dst_len 的抽头表；返回权重池（调用方 free），失败 NULL */
+/* Implementation details. */
 static float *build_lweights(int src_len, int dst_len, lrow_t *rows)
 {
     double scale = (double)src_len / dst_len;
-    double fs = scale > 1.0 ? scale : 1.0;       /* 上采样核不展宽 */
+    double fs = scale > 1.0 ? scale : 1.0;       /* Implementation details. */
     if (fs > LANCZOS_MAX_FS) fs = LANCZOS_MAX_FS;
     int max_taps = (int)(2.0 * LANCZOS_A * fs) + 3;
     float *pool = (float *)malloc(sizeof(float) * (size_t)dst_len * (size_t)max_taps);
     if (!pool) return NULL;
     for (int d = 0; d < dst_len; d++) {
-        double center = (d + 0.5) * scale - 0.5; /* 目标像素中心映射回源 */
+        double center = (d + 0.5) * scale - 0.5; /* Implementation details. */
         int i0 = (int)floor(center - LANCZOS_A * fs);
         int i1 = (int)ceil(center + LANCZOS_A * fs);
         if (i1 - i0 + 1 > max_taps) i1 = i0 + max_taps - 1;
         float *w = pool + (size_t)d * max_taps;
         double sum = 0.0;
         for (int i = i0; i <= i1; i++) {
-            double k = lanczos_kernel((i - center) / fs) / fs; /* 面积归一化 */
+            double k = lanczos_kernel((i - center) / fs) / fs; /* Implementation details. */
             w[i - i0] = (float)k;
             sum += k;
         }
@@ -314,8 +307,7 @@ static float *build_lweights(int src_len, int dst_len, lrow_t *rows)
     return pool;
 }
 
-/* src(宽 w 行距) 裁切窗 (cx,cy,cw,ch) → dst(tw×th)，两遍分离 Lanczos3。
- * 注：全图高度不参与（垂直范围由裁切窗 ch 决定，行下标 clamp 到窗内）。 */
+/* Implementation details. */
 static int resize_lanczos3(const unsigned char *src, int w,
                            int cx, int cy, int cw, int ch,
                            unsigned char *dst, int tw, int th)
@@ -331,7 +323,7 @@ static int resize_lanczos3(const unsigned char *src, int w,
         return IMGPREP_E_MEM;
     }
 
-    /* 第一遍：水平。源行 = 原图 (cy+y) 行，列取 [cx, cx+cw) clamp */
+    /* Implementation details. */
     for (int y = 0; y < ch; y++) {
         const unsigned char *srow = src + ((size_t)(cy + y) * w) * 3;
         unsigned char *drow = tmp + (size_t)y * tw * 3;
@@ -355,7 +347,7 @@ static int resize_lanczos3(const unsigned char *src, int w,
         }
     }
 
-    /* 第二遍：垂直。tmp(tw×ch) → dst(tw×th)，行下标 clamp 到 [0,ch) */
+    /* Implementation details. */
     for (int ty = 0; ty < th; ty++) {
         const lrow_t *r = &yr[ty];
         unsigned char *drow = dst + (size_t)ty * tw * 3;
@@ -382,11 +374,9 @@ static int resize_lanczos3(const unsigned char *src, int w,
     return IMGPREP_OK;
 }
 
-/* ---------------- unsharp mask 锐化（HQ，缩后） ---------------- */
+/* Implementation details. */
 
-/* 参数（固定）：高斯 σ=1.0px（@300dpi 输出网格），amount=0.35，阈值=0。
- * 可分离两趟高斯模糊（半径 3σ=3，7 taps，double 权重），中间/模糊图
- * uint8（量化 ±0.5 LSB × amount 0.35 → 锐化增量误差 <0.2 LSB）。 */
+/* Implementation details. */
 #define USHARP_SIGMA   1.0
 #define USHARP_AMOUNT  0.35
 
@@ -405,7 +395,7 @@ static void unsharp_mask(unsigned char *img, int w, int h)
     unsigned char *blur = (unsigned char *)malloc((size_t)w * h * 3);
     if (!tmp || !blur) { free(tmp); free(blur); return; }
 
-    /* 水平模糊 → tmp */
+    /* Implementation details. */
     for (int y = 0; y < h; y++) {
         const unsigned char *s = img + (size_t)y * w * 3;
         unsigned char *d = tmp + (size_t)y * w * 3;
@@ -423,7 +413,7 @@ static void unsharp_mask(unsigned char *img, int w, int h)
             d += 3;
         }
     }
-    /* 垂直模糊 tmp → blur */
+    /* Implementation details. */
     for (int y = 0; y < h; y++) {
         unsigned char *d = blur + (size_t)y * w * 3;
         for (int x = 0; x < w; x++) {
@@ -440,8 +430,7 @@ static void unsharp_mask(unsigned char *img, int w, int h)
             d += 3;
         }
     }
-    /* out = orig + amount·(orig − blur)，阈值 0 → 无差别应用；
-     * 增量四舍五入到最近整数（正负对称） */
+    /* Implementation details. */
     size_t n = (size_t)w * h * 3;
     for (size_t i = 0; i < n; i++) {
         int d = (int)img[i] - (int)blur[i];
@@ -454,30 +443,11 @@ static void unsharp_mask(unsigned char *img, int w, int h)
 
 /* ---------------- AdobeRGB(1998) → sRGB（D65，HQ） ---------------- */
 
-/* 公式（公开标准值，注释即"转换公式引用"）：
- *   线性化   : v_lin = (v/255)^2.19921875   （Adobe RGB 官方 γ=563/256）
- *   矩阵     : [XYZ] = M_adobe · v_lin
- *              M_adobe（Adobe RGB D65→XYZ，Adobe/ICC 规格表）:
- *                0.5767309  0.1855540  0.1881852
- *                0.2973769  0.6273491  0.0752751
- *                0.0270343  0.0706872  0.9911085
- *              [sRGB_lin] = M_srgb · [XYZ]
- *              M_srgb（XYZ D65→sRGB，IEC 61966-2-1 / sRGB 标准）:
- *                 3.2404542 -1.5371385 -0.4985314
- *                -0.9692660  1.8760108  0.0415560
- *                 0.0556434 -0.2040259  1.0572252
- *              合成矩阵 M = M_srgb·M_adobe 在 init 里以 double 求积。
- *   编码     : sRGB 分段 γ：
- *                y ≤ 0.0031308 → 12.92y
- *                否则          → 1.055·y^(1/2.4) − 0.055
- * 精度：线性化用 256 项 double LUT（输入必为 8-bit，精确）；编码用
- * 16-bit linear → 8-bit sRGB 的 65536 项 float LUT（步进 <0.05 LSB）；
- * 矩阵乘 double。端到端误差 <0.5 LSB。LUT/矩阵首次调用初始化
- * （服务单线程；多线程场景需调用方自行串行化首调）。 */
+/* Implementation details. */
 static void adobergb_to_srgb(unsigned char *img, size_t npx)
 {
-    static double lin[256];                     /* v → 线性 */
-    static float  enc[65536];                   /* 16-bit 线性 → sRGB 0..255 */
+    static double lin[256];                     /* Implementation details. */
+    static float  enc[65536];                   /* Implementation details. */
     static double M[3][3];                      /* M = M_srgb · M_adobe */
     static int inited = 0;
     if (!inited) {
@@ -522,7 +492,7 @@ static void adobergb_to_srgb(unsigned char *img, size_t npx)
     }
 }
 
-/* ---------------- 文件读取 ---------------- */
+/* Implementation details. */
 
 static unsigned char *read_file_all(const char *path, size_t *out_len)
 {
@@ -543,10 +513,9 @@ static unsigned char *read_file_all(const char *path, size_t *out_len)
     return buf;
 }
 
-/* ---------------- 编辑参数（§18 裁切/旋转） ---------------- */
+/* Implementation details. */
 
-/* 显式旋转角(顺时针) → EXIF Orientation 等价码（覆盖用，不叠加 EXIF）：
- * 0→1(原样) 90→6(CW90) 180→3 270→8 */
+/* Implementation details. */
 static int rotation_to_orient(int deg)
 {
     switch (deg) {
@@ -557,7 +526,7 @@ static int rotation_to_orient(int deg)
     }
 }
 
-/* 生效旋转角（度，报告用）：EXIF 自动时按主旋转分量折算（镜像组取转置轴） */
+/* Implementation details. */
 static int effective_rotation_deg(int orient_override, int exif_orient)
 {
     if (orient_override >= 0) return orient_override;
@@ -565,7 +534,7 @@ static int effective_rotation_deg(int orient_override, int exif_orient)
     case 3: case 4:   return 180;
     case 5: case 6:   return 90;
     case 7: case 8:   return 270;
-    default:          return 0;   /* 1/2/无 */
+    default:          return 0;   /* Implementation details. */
     }
 }
 
@@ -575,11 +544,11 @@ int imgprep_edit_validate(imgprep_edit_t *e, int rotated_w, int rotated_h)
     if (!(e->crop_x >= 0.0) || !(e->crop_y >= 0.0) ||
         !(e->crop_w > 0.0)  || !(e->crop_h > 0.0) ||
         !(e->crop_x <= 1.0) || !(e->crop_y <= 1.0))
-        return IMGPREP_E_ARG;                       /* NaN/Inf 也被 !(x>=lim) 拦下 */
-    if (e->crop_x + e->crop_w > 1.0) e->crop_w = 1.0 - e->crop_x;   /* 边界钳制 */
+        return IMGPREP_E_ARG;                       /* Implementation details. */
+    if (e->crop_x + e->crop_w > 1.0) e->crop_w = 1.0 - e->crop_x;   /* Implementation details. */
     if (e->crop_y + e->crop_h > 1.0) e->crop_h = 1.0 - e->crop_y;
     if (!(e->crop_w > 0.0) || !(e->crop_h > 0.0)) return IMGPREP_E_ARG;
-    /* 最小尺寸校验：按 DCT 前的旋转后逻辑尺寸（源像素语义） */
+    /* Implementation details. */
     if (rotated_w > 0 && rotated_h > 0 &&
         (e->crop_w * rotated_w < IMGPREP_MIN_CROP_PX ||
          e->crop_h * rotated_h < IMGPREP_MIN_CROP_PX))
@@ -590,7 +559,7 @@ int imgprep_edit_validate(imgprep_edit_t *e, int rotated_w, int rotated_h)
     return IMGPREP_OK;
 }
 
-/* ---------------- 主流程（内存 JPEG 源 → 输出 JPEG） ---------------- */
+/* Implementation details. */
 
 static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
                         const char *out_path,
@@ -601,9 +570,9 @@ static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
     if (!jpeg || !out_path || jpeg_len < 4) return IMGPREP_E_ARG;
     int fast = (flags & IMGPREP_F_FAST) ? 1 : 0;
     volatile int q = (quality > 0 && quality <= 100)
-                     ? quality : (fast ? 92 : 95);     /* 防 setjmp clobber */
+                     ? quality : (fast ? 92 : 95);     /* Implementation details. */
     volatile int fl = flags;
-    /* 编辑参数快照（§18；setjmp 前拷贝，错误路径不读） */
+    /* Implementation details. */
     volatile double e_cx = 0, e_cy = 0, e_cw = 1, e_ch = 1;
     volatile int e_rot = -1;
     volatile int has_edit = 0;
@@ -614,7 +583,7 @@ static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
         has_edit = 1;
     }
 
-    /* ---- 解码 ---- */
+    /* Implementation details. */
     struct jpeg_decompress_struct dc;
     jerr_t jerr;
     dc.err = jpeg_std_error(&jerr.pub);
@@ -631,9 +600,9 @@ static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
     }
     jpeg_create_decompress(&dc);
     jpeg_mem_src(&dc, jpeg, (unsigned long)jpeg_len);
-    jpeg_save_markers(&dc, JPEG_APP0 + 1, 0xFFFF); /* 抓 Exif */
-    jpeg_save_markers(&dc, JPEG_APP0 + 2, 0xFFFF); /* 抓 ICC */
-    jpeg_save_markers(&dc, JPEG_APP0 + 14, 0xFFFF);/* 抓 Adobe */
+    jpeg_save_markers(&dc, JPEG_APP0 + 1, 0xFFFF); /* Implementation details. */
+    jpeg_save_markers(&dc, JPEG_APP0 + 2, 0xFFFF); /* Implementation details. */
+    jpeg_save_markers(&dc, JPEG_APP0 + 14, 0xFFFF);/* Implementation details. */
     if (jpeg_read_header(&dc, TRUE) != JPEG_HEADER_OK)
         longjmp(jerr.jb, 1);
 
@@ -641,12 +610,12 @@ static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
     exif_info_t ei = find_exif(&dc);
     int cs = ei.colorspace;
     int adobe = find_adobe_marker(&dc);
-    /* 旋转语义（§18）：显式 rotation 覆盖 EXIF（不叠加）；-1=EXIF 自动 */
+    /* Implementation details. */
     int orient = has_edit && e_rot >= 0 ? rotation_to_orient(e_rot) : ei.orient;
-    int ow = (orient >= 5) ? src_h : src_w; /* 旋转后逻辑尺寸 */
+    int ow = (orient >= 5) ? src_h : src_w; /* Implementation details. */
     int oh = (orient >= 5) ? src_w : src_h;
 
-    /* 编辑参数范围/最小尺寸校验（按旋转后逻辑尺寸；不合法即拒绝，不猜） */
+    /* Implementation details. */
     if (has_edit) {
         imgprep_edit_t ev;
         ev.crop_x = e_cx; ev.crop_y = e_cy;
@@ -658,16 +627,13 @@ static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
         }
     }
 
-    /* 兜底目标（无能力信息时；按旋转后方向取 1200×1800 / 1800×1200） */
+    /* Implementation details. */
     if (tw <= 0 || th <= 0) {
         if (oh >= ow) { tw = IMGPREP_FALLBACK_W; th = IMGPREP_FALLBACK_H; }
         else          { tw = IMGPREP_FALLBACK_H; th = IMGPREP_FALLBACK_W; }
     }
 
-    /* DCT 缩放档（两级缩放第一级）：
-     * HQ ：旋转后两维均 ≥ 2×目标 的最大缩放档（给 Lanczos3 留够核支
-     *      揽的同时不让第二级过重）；都不满足则 1/1（上采样交给核）。
-     * FAST：旧规则——两维均 ≥ 目标 即止。 */
+    /* Implementation details. */
     static const int dens[] = { 8, 4, 2, 1 };
     int den = 1;
     for (unsigned i = 0; i < sizeof(dens) / sizeof(dens[0]); i++) {
@@ -710,7 +676,7 @@ static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
         return IMGPREP_E_MEM;
     }
     while (dc.output_scanline < dc.output_height) {
-        int done = (int)dc.output_scanline; /* 本次读入行的存放下标 */
+        int done = (int)dc.output_scanline; /* Implementation details. */
         JSAMPROW rp[1] = { row };
         jpeg_read_scanlines(&dc, rp, 1);
         memcpy(rgb + (size_t)done * w * 3, row, (size_t)w * 3);
@@ -719,19 +685,19 @@ static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
     jpeg_finish_decompress(&dc);
     jpeg_destroy_decompress(&dc);
 
-    /* ---- EXIF 方向 ---- */
+    /* Implementation details. */
     int rw2 = w, rh2 = h;
     rgb = apply_orientation(rgb, w, h, orient, &rw2, &rh2);
     if (!rgb) return IMGPREP_E_MEM;
 
-    /* ---- 用户裁切窗（§18：归一化矩形定义在旋转后的图上 = GUI 预览坐标系） ---- */
+    /* Implementation details. */
     int ux = 0, uy = 0, uw = rw2, uh = rh2;
     if (has_edit) {
         ux = (int)(e_cx * rw2 + 0.5);
         uy = (int)(e_cy * rh2 + 0.5);
         uw = (int)(e_cw * rw2 + 0.5);
         uh = (int)(e_ch * rh2 + 0.5);
-        /* 像素边界钳制（归一化层已钳过，这里吸收取整溢出） */
+        /* Implementation details. */
         if (ux < 0) ux = 0;
         if (uy < 0) uy = 0;
         if (ux > rw2) ux = rw2;
@@ -742,7 +708,7 @@ static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
         if (uh < 1) uh = 1;
     }
 
-    /* ---- 纸型比例居中适配（在用户裁切窗内；无编辑时窗=全幅，同旧行为） ---- */
+    /* Implementation details. */
     double ta = (double)tw / th;
     int cw, ch;
     if ((double)uw / uh > ta) { ch = uh; cw = (int)((double)uh * ta); }
@@ -760,7 +726,7 @@ static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
         rep->ucrop_w = uw; rep->ucrop_h = uh;
     }
 
-    /* ---- 重采样（两级缩放第二级） ---- */
+    /* Implementation details. */
     unsigned char *out = (unsigned char *)malloc((size_t)tw * th * 3);
     if (!out) { free(rgb); return IMGPREP_E_MEM; }
     int rret;
@@ -773,17 +739,17 @@ static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
     free(rgb);
     if (rret != 0) { free(out); return rret; }
 
-    /* ---- 色彩管理（HQ）：AdobeRGB → sRGB ---- */
+    /* Implementation details. */
     if (!fast && !(fl & IMGPREP_F_NOCM) && cs != 1 && adobe) {
         adobergb_to_srgb(out, (size_t)tw * th);
         if (rep) rep->cm_converted = 1;
     }
 
-    /* ---- 缩后锐化（HQ only） ---- */
+    /* Implementation details. */
     if (!fast && !(fl & IMGPREP_F_NOSHRP))
         unsharp_mask(out, tw, th);
 
-    /* ---- 编码：HQ q95/4:4:4（无色度抽样）；FAST q92/4:2:2 ---- */
+    /* Implementation details. */
     FILE *fout = fopen(out_path, "wb");
     if (!fout) { free(out); return IMGPREP_E_IO; }
     struct jpeg_compress_struct co;
@@ -791,7 +757,7 @@ static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
     co.err = jpeg_std_error(&cerr.pub);
     cerr.pub.error_exit = jerr_exit;
     cerr.pub.output_message = jerr_noop;
-    volatile int ret = IMGPREP_OK; /* 防 setjmp clobber */
+    volatile int ret = IMGPREP_OK; /* Implementation details. */
     if (setjmp(cerr.jb)) {
         ret = IMGPREP_E_ENCODE;
         goto enc_done;
@@ -805,17 +771,17 @@ static int prepare_core(const unsigned char *jpeg, size_t jpeg_len,
     jpeg_set_defaults(&co);
     jpeg_set_quality(&co, q, TRUE);
     if (fast) {
-        co.comp_info[0].h_samp_factor = 2; /* 4:2:2 色度抽样 */
+        co.comp_info[0].h_samp_factor = 2; /* Implementation details. */
         co.comp_info[0].v_samp_factor = 1;
     } else {
-        co.comp_info[0].h_samp_factor = 1; /* 4:4:4 无色度抽样 */
+        co.comp_info[0].h_samp_factor = 1; /* Implementation details. */
         co.comp_info[0].v_samp_factor = 1;
     }
     co.comp_info[1].h_samp_factor = 1;
     co.comp_info[1].v_samp_factor = 1;
     co.comp_info[2].h_samp_factor = 1;
     co.comp_info[2].v_samp_factor = 1;
-    co.density_unit = 1;                /* 300 dpi 元数据 */
+    co.density_unit = 1;                /* Implementation details. */
     co.X_density = 300;
     co.Y_density = 300;
     jpeg_start_compress(&co, TRUE);
@@ -834,7 +800,7 @@ enc_done:
     return ret;
 }
 
-/* ---------------- 公开入口 ---------------- */
+/* Implementation details. */
 
 int imgprep_prepare(const char *in_path, const char *out_path,
                     int target_w, int target_h, int quality,
@@ -908,7 +874,7 @@ int imgprep_from_3fr_edit(const char *path, const char *out_path,
     return e;
 }
 
-/* ---------------- 头部探测（§18 doGet_photo_info 之源，不解码像素） ---------------- */
+/* Implementation details. */
 
 static int probe_mem(const unsigned char *jpeg, size_t len, imgprep_info_t *info)
 {

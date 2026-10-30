@@ -28,11 +28,11 @@
 #define LOCAL_DEBUG 0
 
 #define LOG_TAG "libusb/usbfs"
-#if 1	// デバッグ情報を出さない時1
+#if 1	// To suppress debug output: 1
 	#ifndef LOG_NDEBUG
-		#define	LOG_NDEBUG		// LOGV/LOGD/MARKを出力しない時
+		#define	LOG_NDEBUG		// To suppress LOGV/LOGD/MARK output
 		#endif
-	#undef USE_LOGALL			// 指定したLOGxだけを出力
+	#undef USE_LOGALL			// Output only the specified LOGx
 #else
 	#define USE_LOGALL
 	#undef LOG_NDEBUG
@@ -206,7 +206,7 @@ static void dump_urb(int ix, int fd, struct usbfs_urb *urb) {
 		LOGE("Failed to get fd flags: %d", errno);
 	}
 	LOGI("ファイフディスクリプタフラグ:%x", ret);
-	LOGI("O_ACCMODE:%x", ret & O_ACCMODE);				// 0:読み込み専用, 1:書き込み専用, 2;読み書き可
+	LOGI("O_ACCMODE:%x", ret & O_ACCMODE);				// 0:read-only, 1:write-only, 2;read/write
 	LOGI("ノンブロッキングかどうか:%d", ret & O_NONBLOCK);	// 0:ブロッキング
 	LOGI("%d:type=%d,endpopint=0x%02x,status=%d,flag=%d", ix, urb->type, urb->endpoint, urb->status, urb->flags);
 	LOGI("%d:buffer=%p,buffer_length=%d,actual_length=%d,start_frame=%d", ix, urb->buffer, urb->buffer_length, urb->actual_length, urb->start_frame);
@@ -1312,7 +1312,7 @@ static int android_initialize_device(struct libusb_device *dev,
 	priv->fd = 0;
 	memset(desc, 0, sizeof(desc));
     if (!lseek(fd, 0, SEEK_SET)) {
-        // ディスクリプタを読み込んでローカルキャッシュする
+        // Read descriptors and cache them locally
         int length = read(fd, desc, sizeof(desc));
         LOGD("Device::init read returned %d errno %d\n", length, errno);
 		if (length > 0) {
@@ -1388,7 +1388,7 @@ int android_generate_device(struct libusb_context *ctx, struct libusb_device **d
  	 * a session ID. */
 	session_id = busnum << 8 | devaddr;
  	LOGD("allocating new device for %d/%d (session %ld)", busnum, devaddr, session_id);
- 	*dev = usbi_alloc_device(ctx, session_id);	// この時点で参照カウンタ=1
+	*dev = usbi_alloc_device(ctx, session_id);	// Reference count=1 at this point
  	if (UNLIKELY(!dev)) {
  		RETURN(LIBUSB_ERROR_NO_MEM, int);
  	}
@@ -1406,7 +1406,7 @@ int android_generate_device(struct libusb_context *ctx, struct libusb_device **d
 
 out:
  	if (UNLIKELY(r < 0)) {
- 		libusb_unref_device(*dev);	// ここで参照カウンタが0になって破棄される
+		libusb_unref_device(*dev);	// The reference count becomes 0 here and the device is destroyed
  		*dev = NULL;
  	} else {
  		usbi_connect_device(*dev);

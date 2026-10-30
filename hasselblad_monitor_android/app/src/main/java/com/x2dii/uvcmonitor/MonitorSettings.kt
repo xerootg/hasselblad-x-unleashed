@@ -4,7 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 
-/** 监视器设置（Compose 快照状态，UI 与渲染参数同源） */
+/** Monitor settings (Compose snapshot state shared by the UI and rendering parameters) */
 class MonitorSettings {
     var uiVisible by mutableStateOf(true)
     var gridMode by mutableStateOf(GridMode.Off)
@@ -23,12 +23,12 @@ class MonitorSettings {
 }
 
 enum class GridMode(val label: String) {
-    Off("关"), Thirds("三分"), Diagonals("对角"), Center("中心"), Golden("黄金");
+    Off("Off"), Thirds("Thirds"), Diagonals("Diagonals"), Center("Center"), Golden("Golden");
     fun next(): GridMode = entries[(ordinal + 1) % entries.size]
 }
 
 enum class AspectMode(val ratio: Float?, val label: String) {
-    Off(null, "关"),
+    Off(null, "Off"),
     R169(16f / 9f, "16:9"),
     R43(4f / 3f, "4:3"),
     R11(1f, "1:1"),

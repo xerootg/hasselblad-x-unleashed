@@ -1,121 +1,120 @@
 # Hasselblad X Unleashed
 
-> 哈苏 X 系统相机机内能力拓展研究项目
-> Exploring and extending in-camera capabilities of the Hasselblad X System.
+> A research project exploring and extending the in-camera capabilities of the Hasselblad X System.
 
-[English](README.en.md) · **简体中文**
+**English** · [English translation](README.en.md)
 
 ---
 
-## 📌 项目简介
+## 📌 Overview
 
-本项目致力于探索哈苏 X 系统（X1D / X2D / X2DII / CFV 等）相机固件的潜力，在机身内实现原厂尚未提供的拍摄与交互功能，让这台精密的中画幅相机拥有更多可能性。
+This project explores the potential of Hasselblad X System camera firmware (X1D / X2D, etc.), implementing in-camera shooting and interaction features not offered by the factory — giving this precise medium-format camera a few more possibilities.
 
-## 🚀 开发进展
+## 🚀 Progress
 
-| 功能 | 说明 | 状态 |
+| Feature | Description | Status |
 | --- | --- | :---: |
-| 对焦包围（景深包围） | 在机内原有采样功能的基础上进一步强化，自动按步进移动对焦点连拍，用于微距 / 产品摄影的景深合成 | ✅ 已完成 |
-| 像素偏移机内合成 | 利用传感器位移多次曝光，并在机身内直接合成高分辨率图像 | ✅ 已完成 |
-| RAW 堆栈合成 | 多帧 RAW 的最大值 / 最小值 / 平均值机内合成 | ✅ 已完成 |
-| 直连无线打印机 | 无需电脑或手机中转，相机直接通过无线网络连接打印机输出照片 | ✅ 已完成 |
-| 机内 NES 游戏 / DOOM | 在相机屏幕上运行 NES 模拟器与经典游戏 DOOM，并支持通过桥接连接 PS5（DualSense）手柄进行游玩 | ✅ 已完成 |
-| 机内无线麦克风 | 支持双 DJI MIC 无线麦克风立体声音频输入：内录 48 kHz / 24 bit，相机 Wi-Fi 48 kHz / 16 bit | ✅ 已完成 |
-| 外接监视器（UVC） | 相机通过 USB 以标准 UVC 设备输出实时取景画面，电脑即插即用；配套安卓 / iOS 监看 App，内置斑马纹、假彩色、峰值对焦、直方图、画幅遮罩等专业监看工具 | ✅ 已完成 |
-| 视频录制 | 解锁机身视频录制能力，机身内直接产出 MP4 | 🚧 开发中 |
+| Focus bracketing (depth-of-field bracketing) | Builds on the camera's existing sampling capability, automatically stepping the focus point across a burst for focus stacking in macro / product photography | ✅ Done |
+| In-camera pixel shift merge | Uses sensor-shift multi-exposure and merges the high-resolution image directly on the camera body | ✅ Done |
+| RAW stack merge | In-camera max / min / mean merging of multiple RAW frames | ✅ Done |
+| Direct wireless printing | The camera connects to a wireless printer and outputs photos directly, with no computer or phone in between | ✅ Done |
+| In-camera NES games / DOOM | Runs an NES emulator and the classic game DOOM on the camera's display, with support for playing via a bridged PS5 (DualSense) controller | ✅ Done |
+| In-camera wireless microphone | Supports a pair of DJI MIC wireless microphones for stereo audio input: internal recording at 48 kHz / 24 bit, 48 kHz / 16 bit over the camera's Wi-Fi link | ✅ Done |
+| External monitor (UVC) | The camera outputs its live view over USB as a standard UVC device, plug-and-play on any computer; companion Android / iOS apps add zebra, false color, focus peaking, histogram, aspect masks and other monitoring tools | ✅ Done |
+| Video recording | Unlocks the camera body's video recording capability, with MP4 now produced directly in-camera | 🚧 In progress |
 
-> 更多功能持续探索中，欢迎交流。
+> More features are being explored — feedback and discussion are welcome.
 
 ## 📝 TODO
 
-- [ ] **视频录制与无线麦克风音轨结合** —— 让机内视频录制直接合入无线麦克风的音轨。
-- [ ] **后续可能支持 DJI RC 控制** —— 探索通过 DJI RC 遥控器对相机进行操控。
+- [ ] **Combine video recording with the wireless microphone audio track** — mux the wireless mic's audio directly into in-camera video recording.
+- [ ] **Possible DJI RC control support** — explore controlling the camera via a DJI RC remote.
 
-> 相关功能在后续完善后会开源；届时会移除其中可能侵犯权益、或涉及触犯法律的漏洞利用部分，仅保留可公开、合规的实现思路。
+> These features will be open-sourced once they are polished. At that point, any parts involving potentially infringing or legally questionable exploits will be removed, keeping only publicly shareable, compliant implementation ideas.
 
-## 📂 仓库结构
+## 📂 Repository layout
 
-| 目录 | 内容 |
+| Directory | Contents |
 | --- | --- |
-| `hasselblad_mic/` | 无线麦克风：扫描 / 配对、连接管理与状态设置、LC3plus 解码、PCM FIFO、WAV 录音，以及供视频录制使用的音频租约接口 |
-| `hasselblad_monitor/` | 外接监视器（相机侧）：UVC gadget 喂帧器与内核运行时防护模块 |
-| `hasselblad_monitor_android/` | 外接监视器（安卓监看端）：UVC 取流 + GL 渲染，内置全套监看工具 |
-| `hasselblad_x2nes/` | 机内 NES 模拟器与 DOOM，含原厂 GUI 菜单入口注入 |
-| `hasselblad_x2print/` | 机内 IPP 无线打印服务（D-Bus 契约、三级打印机发现、生产化部署） |
+| `hasselblad_mic/` | Wireless microphone: scanning / pairing, connection management and settings, LC3plus decoding, PCM FIFO, WAV recording, plus audio-lease interfaces for video recording |
+| `hasselblad_monitor/` | External monitor (camera side): UVC gadget frame feeder and kernel-runtime guard modules |
+| `hasselblad_monitor_android/` | External monitor (Android viewer): UVC capture + GL rendering with the full monitoring toolset |
+| `hasselblad_x2nes/` | In-camera NES emulator and DOOM, including the native GUI menu-entry injection |
+| `hasselblad_x2print/` | In-camera IPP wireless printing service (D-Bus contract, three-level printer discovery, production deployment) |
 
-## 📸 功能截图
+## 📸 Screenshots
 
-### 景深包围 / Pixel Shift 拍摄模式
+### Focus bracketing / Pixel Shift shooting modes
 
-机内拍摄模式菜单，新增「景深包围」与「Pixel Shift」等选项（传感器位移序列驱动 IBIS）。
+The in-camera shooting-mode menu, with new "Focus bracketing" and "Pixel Shift" options (the sensor-shift sequence drives IBIS).
 
-![拍摄模式](assets/screenshots/pixel_shift.jpg)
+![Shooting modes](assets/screenshots/pixel_shift.jpg)
 
-### 堆栈合成
+### Stack merge
 
-机内直接完成「摇摇乐（Pixel Shift）合成」与「景深包围合成」，输出 TIF。
+Pixel Shift merge and focus-bracketing merge are completed directly in-camera, output as TIF.
 
-![堆栈合成](assets/screenshots/stacks.jpg)
+![Stack merge](assets/screenshots/stacks.jpg)
 
-### Pixel Shift：Auto4 / Auto6 / Auto16 位移与合成用途
+### Pixel Shift: Auto4 / Auto6 / Auto16 motion patterns and merge uses
 
-2026-9-28 已通过原厂位移调用、轴向应答／回读和 26 张实拍 RAW 的图像配准，核对以下点位顺序。详细记录见 [原厂多拍位移验证](docs/MULTISHOT_MOTION_20260928.md)。
+On 2026-09-28 the point sequences below were verified through the factory motion commands, axis response/readback, and image registration of 26 real captured RAWs. See the [factory multi-shot motion verification](docs/MULTISHOT_MOTION_20260928.md) for the detailed record.
 
-| 模式 | 已确认的原厂点位设计 | 合成用途 | 当前产品规则 |
+| Mode | Verified factory point design | Merge use | Current product rule |
 | --- | --- | --- | --- |
-| Auto4 | 整数四点位移 | 适合约 1 亿像素全彩合成：同一场景位置取得 R、G1、G2、B 实测采样 | 仅逐张保存，供电脑端合成 |
-| Auto6 | 在四个整数点位上增加两个半像素点位 | 适合约 4 亿像素合成；增加空间采样，仍需重建算法 | 可选机内 Merged 或逐张 Photos |
-| Auto16 | 步长 0.5 像素的 4 × 4 蛇形网格 | 适合更充分的全彩超分辨率重建，也可配准后降噪；电脑端自行选择处理方式 | 仅逐张保存，供电脑端合成 |
+| Auto4 | Integer four-point shifts | Suited to ~100 MP full-color merging: R, G1, G2 and B are measured at the same scene position | Frame-by-frame saving only, for desktop merging |
+| Auto6 | Two half-pixel positions added on top of the four integer points | Suited to ~400 MP merging; adds spatial sampling and still requires a reconstruction algorithm | Optional in-camera Merged or frame-by-frame Photos |
+| Auto16 | 4 × 4 serpentine grid with 0.5-pixel steps | Suited to fuller full-color super-resolution reconstruction, or registration-based denoising; process it however you like on the desktop | Frame-by-frame saving only, for desktop merging |
 
-逐张保存跟随机身画质中的图像格式设置；参考帧为可选项，不计入上表的 4／6／16 张位移帧。
-四帧的全彩合成用途不表示当前提供四帧机内合成。
+Frame-by-frame saving follows the body's image-quality image-format setting; the reference frame is optional and is not counted among the 4 / 6 / 16 shifted frames above.
+The four-frame full-color merge use case does not mean a four-frame in-camera merge is currently provided.
 
-### 实拍对比：Pixel Shift 合成 vs 普通单张
+### Real-world comparison: Pixel Shift merge vs normal single shot
 
-![Pixel Shift 对比](assets/screenshots/pixel_shift2.png)
+![Pixel Shift comparison](assets/screenshots/pixel_shift2.png)
 
-同一场景 ISO 6400 实拍（B0001053 / B0001054）：
+Same scene captured at ISO 6400 (B0001053 / B0001054):
 
-| 项目 | 1053：Pixel Shift 合成 | 1054：普通单张 |
+| Item | 1053: Pixel Shift merged | 1054: Normal single shot |
 | --- | --- | --- |
-| HEIC 尺寸 | 23310 × 17482（407.51 MP） | 11656 × 8742（101.90 MP） |
-| HEIC 编码 | 10 位，4:2:0，8×6 瓦片 | 10 位，4:2:0，4×3 瓦片 |
-| RAW 存储 | 23310×17482，16 位单通道 CFA | 11904×8842，16 位单通道 CFA（含传感器边界） |
-| ISO / 镜头焦距 | 6400 / 100 mm | 6400 / 100 mm |
-| 记录的曝光时间 / 光圈 | 0.00929 s / f4.74 | 0.01000 s / f4.8 |
-| 拍摄时间 | 20:13:07 | 20:17:27 |
-| 3FR | 819,400,704 字节 | 213,864,448 字节 |
-| HEIC | 132,702,208 字节 | 56,125,440 字节 |
+| HEIC size | 23310 × 17482 (407.51 MP) | 11656 × 8742 (101.90 MP) |
+| HEIC encoding | 10-bit, 4:2:0, 8×6 tiles | 10-bit, 4:2:0, 4×3 tiles |
+| RAW storage | 23310×17482, 16-bit single-channel CFA | 11904×8842, 16-bit single-channel CFA (incl. sensor border) |
+| ISO / focal length | 6400 / 100 mm | 6400 / 100 mm |
+| Recorded exposure / aperture | 0.00929 s / f4.74 | 0.01000 s / f4.8 |
+| Capture time | 20:13:07 | 20:17:27 |
+| 3FR | 819,400,704 bytes | 213,864,448 bytes |
+| HEIC | 132,702,208 bytes | 56,125,440 bytes |
 
-> 完整的同区域 400% / 800% 对比见 [`reports/Pixel Shift_compare_1053_1054`](reports/Pixel%20Shift_compare_1053_1054/) 目录（附本地交互版 REPORT.html）。
+> For the full same-region 400% / 800% comparison see the [`reports/Pixel Shift_compare_1053_1054`](reports/Pixel%20Shift_compare_1053_1054/) directory (includes a local interactive REPORT.html).
 
-### 机内无线麦克风
+### In-camera wireless microphone
 
-直连 DJI MIC 等无线麦克风，实时监看电量、信号、电平与丢帧，并支持输入增益、低切 / 高切、静音等设置。
+Connects directly to wireless mics such as the DJI MIC, with live battery, signal, level and dropped-frame monitoring, plus input gain, low-cut / high-cut and mute settings.
 
-![麦克风管理](assets/screenshots/mic_1.jpg)
-![麦克风设置](assets/screenshots/mic_2.jpg)
+![Mic management](assets/screenshots/mic_1.jpg)
+![Mic settings](assets/screenshots/mic_2.jpg)
 
-### 直连无线打印机
+### Direct wireless printing
 
-相机直接连接无线打印机输出照片（演示视频）：
+The camera connects directly to a wireless printer to output photos (demo video):
 
 🎬 [`assets/screenshots/print.mp4`](assets/screenshots/print.mp4)
 
-### 机内 NES 游戏 / DOOM
+### In-camera NES games / DOOM
 
-在相机屏幕上运行 NES 模拟器与经典游戏 DOOM，并支持通过桥接连接 PS5（DualSense）手柄进行游玩（演示视频）：
+Running an NES emulator and the classic game DOOM on the camera's display, with support for playing via a bridged PS5 (DualSense) controller (demo video):
 
 🎬 [`assets/screenshots/nesgame.mp4`](assets/screenshots/nesgame.mp4)
 
-## 🙏 致谢
+## 🙏 Acknowledgements
 
-特别感谢 **[@YuHaoyua](https://github.com/YuHaoyua)** 无私分享 CIM 固件的加密方式及相关密钥，正是这份开放精神，才让本项目成为可能：
+Special thanks to **[@YuHaoyua](https://github.com/YuHaoyua)** for generously sharing the CIM firmware encryption scheme and the related keys. It is this spirit of openness that made this project possible:
 
 👉 [hasselblad-cim-firmware-extractor](https://github.com/YuHaoyua/hasselblad-cim-firmware-extractor)
 
-## ⚠️ 声明
+## ⚠️ Disclaimer
 
-- 为避免有人借此牟利、利用信息差获取不当收益，**本仓库仅公开可行的实现思路**，不涉及相机远程命令执行与 SELinux 绕过的具体说明。
-- 本项目**仅供个人参考与学习研究之用**，请勿用于商业目的。
-- 相关内容基于对公开信息与自有设备的研究，若有任何内容涉及侵犯哈苏（Hasselblad）的合法权益，请及时与我联系，我会第一时间处理。
+- To prevent anyone from profiting off an information gap, **this repository only shares workable ideas and approaches**. It does **not** cover remote command execution on the camera or any instructions for bypassing SELinux.
+- This project is **for personal reference, learning, and research only**. Please do not use it for commercial purposes.
+- The material is based on research using publicly available information and my own devices. If anything here is found to infringe on the legitimate rights of Hasselblad, please contact me and I will address it promptly.

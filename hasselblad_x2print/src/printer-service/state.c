@@ -1,19 +1,20 @@
-/* state.c — 属性存储 + 校验 + 变更通知(见 state.h / INTERFACE.md §2 v2)
- * v2: media/print_quality/color_mode 字符串化, 能力属性由 prn_caps_publish
- * 填充; Set 校验以能力列表为源(caps_ready 后)。 */
+/* state.c — Property storage, validation, and change notifications (see state.h /
+ * INTERFACE.md §2 v2).
+ * v2: media/print_quality/color_mode use strings; prn_caps_publish fills capability
+ * properties; after caps_ready, Set validation uses capability lists. */
 #include "state.h"
 #include "log.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
-static prn_state g_st;             /* 零初始化, init() 填默认值 */
+static prn_state g_st;             /* Zero-initialized; init() fills defaults */
 static prn_notify_fn g_notify;
 static void *g_notify_user;
 
 static const prn_strlist_t g_empty_list = { { { 0 } }, 0 };
 
-/* 属性元信息表: 顺序=枚举=GetAll 输出顺序, 与 INTERFACE.md §2 逐行对齐 */
+/* Property metadata: order = enum = GetAll output order; matches INTERFACE.md §2 row by row */
 static const prn_prop_info g_props[PRN_PROP_COUNT] = {
     [PRN_CONNECTION_STATE]       = { "connection_state",       's', 0, "disconnected|joining|joined|discovering|ready" },
     [PRN_SSID]                   = { "ssid",                   's', 1, "target AP ssid" },
@@ -22,22 +23,23 @@ static const prn_prop_info g_props[PRN_PROP_COUNT] = {
     [PRN_PRINTER_IP]             = { "printer_ip",             's', 0, "selected printer ip" },
     [PRN_JOB_PROGRESS]           = { "job_progress",           'i', 0, "0..100" },
     [PRN_JOB_STATUS]             = { "job_status",             's', 0, "idle|preparing|sending|printing|done|failed|canceled" },
-    [PRN_COPIES]                 = { "copies",                 'i', 1, "1..copies_max(caps 未就绪=99)" },
-    [PRN_MEDIA]                  = { "media",                  's', 1, "打印机原生 media 关键字(取自 supported_media)" },
-    [PRN_PRINT_QUALITY]          = { "print_quality",          's', 1, "draft|normal|high(取自 supported_qualities)" },
-    [PRN_COLOR_MODE]             = { "color_mode",             's', 1, "原生 print-color-mode 关键字(取自 supported_color_modes)" },
-    [PRN_PRESET]                 = { "preset",                 'i', 1, "0 default 1 id 2 polaroid(应用层)" },
-    [PRN_DOCUMENT_FORMAT]        = { "document_format",        's', 0, "实际下发 document-format(只读)" },
-    [PRN_CAPS_READY]             = { "caps_ready",             'b', 0, "能力探测完成" },
-    [PRN_COPIES_MAX]             = { "copies_max",             'i', 0, "copies-supported 上限" },
-    [PRN_SUPPORTED_MEDIA]        = { "supported_media",        'A', 0, "as: 原生 media 关键字" },
-    [PRN_SUPPORTED_QUALITIES]    = { "supported_qualities",    'A', 0, "as: draft/normal/high 子集" },
-    [PRN_SUPPORTED_COLOR_MODES]  = { "supported_color_modes",  'A', 0, "as: 原生 color-mode 关键字" },
+    [PRN_COPIES]                 = { "copies",                 'i', 1, "1..copies_max(caps not ready=99)" },
+    [PRN_MEDIA]                  = { "media",                  's', 1, "Native printer media keyword (from supported_media)" },
+    [PRN_PRINT_QUALITY]          = { "print_quality",          's', 1, "draft|normal|high (from supported_qualities)" },
+    [PRN_COLOR_MODE]             = { "color_mode",             's', 1, "Native print-color-mode keyword (from supported_color_modes)" },
+    [PRN_PRESET]                 = { "preset",                 'i', 1, "0 default 1 ID 2 instant photo (application layer)" },
+    [PRN_DOCUMENT_FORMAT]        = { "document_format",        's', 0, "Actual document-format sent (read-only)" },
+    [PRN_CAPS_READY]             = { "caps_ready",             'b', 0, "Capability probe complete" },
+    [PRN_COPIES_MAX]             = { "copies_max",             'i', 0, "copies-supported limit" },
+    [PRN_SUPPORTED_MEDIA]        = { "supported_media",        'A', 0, "as: native media keywords" },
+    [PRN_SUPPORTED_QUALITIES]    = { "supported_qualities",    'A', 0, "as: supported subset of draft/normal/high" },
+    [PRN_SUPPORTED_COLOR_MODES]  = { "supported_color_modes",  'A', 0, "as: native color-mode keywords" },
     [PRN_SUPPORTED_FORMATS]      = { "supported_formats",      'A', 0, "as: document-format-supported" },
-    [PRN_MEDIA_SIZE_INFO]        = { "media_size_info",        'A', 0, "as: 每项 keyword=WxHmm" },
+    [PRN_MEDIA_SIZE_INFO]        = { "media_size_info",        'A', 0, "as: each entry keyword=WxHmm" },
     [PRN_DISCOVERED_PRINTERS]    = { "discovered_printers",    'A', 0, "array of \"name\\tIP\"" },
     [PRN_SCANNED_NETWORKS]       = { "scanned_networks",       'A', 0, "as: \"SSID\\tRSSI(dBm)\\tSEC\"(wpa2|open), §20 Scan_wifi" },
-    /* odindb-send-printer 兼容面(INTERFACE.md §7b): 补丁槽位固定属性, 只读 */
+    /* odindb-send-printer compatibility surface (INTERFACE.md §7b): fixed properties from
+     * patched slot, read-only */
     [PRN_SYNCED]                 = { "synced",                 'b', 0, "odindb usbhost-slot compat" },
     [PRN_TX_ACTIVE]              = { "tx_active",              'b', 0, "true while tx() runs" },
 };
@@ -71,7 +73,7 @@ prn_state *prn_state_get(void)
     static int inited = 0;
     if (!inited) {
         inited = 1;
-        /* 默认值 = INTERFACE.md §2 v2 初始值列 */
+        /* Defaults = initial values in INTERFACE.md §2 v2 */
         strcpy(g_st.connection_state, "disconnected");
         g_st.ssid[0] = 0;
         strcpy(g_st.printer_state, "idle");
@@ -80,22 +82,22 @@ prn_state *prn_state_get(void)
         g_st.job_progress = 0;
         strcpy(g_st.job_status, "idle");
         g_st.copies = 1;
-        g_st.media[0] = 0;                    /* 探测后=打印机 media-default */
-        strcpy(g_st.print_quality, "normal"); /* 探测后=打印机 quality-default */
-        strcpy(g_st.color_mode, "auto");      /* 探测后=打印机 color-default */
+        g_st.media[0] = 0;                    /* After probe = printer media-default */
+        strcpy(g_st.print_quality, "normal"); /* After probe = printer quality-default */
+        strcpy(g_st.color_mode, "auto");      /* After probe = printer color-default */
         g_st.preset = 0;
         g_st.document_format[0] = 0;
         g_st.caps_ready = 0;
-        g_st.copies_max = 99;                 /* 未探测前的宽容上限 */
+        g_st.copies_max = 99;                 /* Permissive limit before probe */
         g_st.discovered_n = 0;
-        g_st.scanned.n = 0;            /* §20: 扫描列表初始空 */
-        g_st.synced = 1;               /* §7b 初始值: synced=true */
-        g_st.tx_active = 0;            /* §7b 初始值: tx_active=false */
+        g_st.scanned.n = 0;            /* §20: scan list initially empty */
+        g_st.synced = 1;               /* §7b initial value: synced=true */
+        g_st.tx_active = 0;            /* §7b initial value: tx_active=false */
     }
     return &g_st;
 }
 
-/* ---- 可写属性校验 ---- */
+/* ---- Writable-property validation ---- */
 static int int_range_ok(int idx, int v)
 {
     prn_state *st = prn_state_get();
@@ -106,11 +108,12 @@ static int int_range_ok(int idx, int v)
     }
 }
 
-/* 字符串可写属性语义校验: caps_ready 后必须命中能力列表 */
+/* Semantic validation for writable string properties: after caps_ready, value must be in
+ * capability list */
 static int str_value_ok(int idx, const char *v)
 {
     prn_state *st = prn_state_get();
-    if (!st->caps_ready) return 1;             /* 未探测: 暂无能力可校验 */
+    if (!st->caps_ready) return 1;             /* Not probed yet: no capabilities to validate against */
     switch (idx) {
     case PRN_MEDIA:         return prn_list_contains(&st->sup_media, v);
     case PRN_PRINT_QUALITY: return prn_list_contains(&st->sup_qualities, v);
@@ -151,7 +154,7 @@ int prn_set_string(int idx, const char *val)
         return -1;
     }
     if (!*val && idx != PRN_SSID && idx != PRN_MEDIA) {
-        LOGW("set: property '%s' empty value", pi->name); /* media 允许清空(未选打印机) */
+        LOGW("set: property '%s' empty value", pi->name); /* Empty media is allowed (no printer selected) */
         return -2;
     }
     if (strlen(val) >= PRN_SLEN) {
@@ -178,7 +181,7 @@ int prn_set_string(int idx, const char *val)
     return 0;
 }
 
-/* 字符串取值: 返回静态数组(永不 NULL, 封送层可安全直接用); 未知 idx 返回 "" */
+/* Get string value: returns static array (never NULL; safe for marshalling); unknown idx returns "" */
 const char *prn_get_string(int idx)
 {
     prn_state *st = prn_state_get();
@@ -232,9 +235,9 @@ int prn_list_contains(const prn_strlist_t *l, const char *v)
     return 0;
 }
 
-/* ---- 能力发布 / 失效 ---- */
+/* ---- Capability publication/invalidation ---- */
 
-/* 列表填入(静默覆盖; notify 由调用方统一做) */
+/* Fill list (silently overwrite; caller handles notify) */
 static void list_fill(prn_strlist_t *l, const char *const *vals, int n)
 {
     l->n = 0;
@@ -260,17 +263,17 @@ void prn_caps_publish(const ipp_caps_t *caps, const char *document_format)
     prn_state *st = prn_state_get();
     if (!caps) return;
 
-    /* 1) 能力列表 */
+    /* 1) Capability lists */
     const char *medias[IPP_MAX_MEDIA];
     int nm = 0;
     char sizes[IPP_MAX_MEDIA][PRN_LIST_LEN];
     const char *size_ptrs[IPP_MAX_MEDIA];
     int ns = 0;
     for (int i = 0; i < caps->n_media && nm < IPP_MAX_MEDIA; i++) {
-        if (!caps->media_native[i]) continue;      /* 合成显示名不可下发, 不进 supported */
+        if (!caps->media_native[i]) continue;      /* Synthesized display names cannot be sent; omit from supported */
         medias[nm++] = caps->media_supported[i];
         if (caps->media_x_um[i] > 0 && caps->media_y_um[i] > 0 && ns < IPP_MAX_MEDIA) {
-            /* media_size_info: "keyword=WxHmm"(W/H 毫米, 人机两读) */
+            /* media_size_info: "keyword=WxHmm" (W/H in mm, readable by people and software) */
             snprintf(sizes[ns], PRN_LIST_LEN, "%s=%.1fx%.1fmm", caps->media_supported[i],
                      caps->media_x_um[i] / 1000.0, caps->media_y_um[i] / 1000.0);
             size_ptrs[ns] = sizes[ns];
@@ -284,7 +287,7 @@ void prn_caps_publish(const ipp_caps_t *caps, const char *document_format)
     int nq = 0;
     for (int i = 0; i < caps->n_quals && nq < IPP_MAX_QUALS; i++) {
         const char *kw = ipp_quality_kw(caps->qualities[i]);
-        if (kw[0]) quals[nq++] = kw;               /* 仅认识 3/4/5, 其它枚举值跳过 */
+        if (kw[0]) quals[nq++] = kw;               /* Recognize only 3/4/5; skip other enum values */
     }
     list_fill(&st->sup_qualities, quals, nq);
 
@@ -301,7 +304,7 @@ void prn_caps_publish(const ipp_caps_t *caps, const char *document_format)
     st->copies_max = caps->copies_max > 0 ? caps->copies_max : 99;
     caps_notify_lists();
 
-    /* 2) 打印机默认值归一(先置 ready 再校验默认值合法性) */
+    /* 2) Normalize printer defaults (set ready first, then validate defaults) */
     st->caps_ready = 1;
     prn_prop_changed(PRN_CAPS_READY);
 
@@ -332,7 +335,7 @@ void prn_caps_publish(const ipp_caps_t *caps, const char *document_format)
         }
     }
 
-    /* 3) copies 超限钳制(越限值不再合法) */
+    /* 3) Clamp copies to limit (out-of-range value is no longer valid) */
     if (st->copies > st->copies_max) {
         st->copies = st->copies_max;
         prn_prop_changed(PRN_COPIES);
@@ -384,7 +387,7 @@ int prn_discovered_add(const char *name_ip)
     return 0;
 }
 
-/* ---- scanned_networks(§20 扫描选择) ---- */
+/* ---- scanned_networks (§20 scan selection) ---- */
 void prn_scanned_clear(void)
 {
     prn_state *st = prn_state_get();
@@ -411,7 +414,7 @@ int prn_scanned_add(const char *ssid_rssi_sec)
     return 0;
 }
 
-/* ---- 状态机便捷跳转(内部使用, 值不校验) ---- */
+/* ---- State-machine convenience transitions (internal use; values are not validated) ---- */
 static void set_s(char *dst, const char *v, int idx)
 {
     if (strcmp(dst, v)) {
@@ -434,7 +437,7 @@ void prn_set_job_progress(int v)
     if (st->job_progress != v) { st->job_progress = v; prn_prop_changed(PRN_JOB_PROGRESS); }
 }
 
-/* odindb 兼容属性(§7b)翻转: 值规整 0/1, 变化才 notify */
+/* Toggle odindb compatibility properties (§7b): normalize to 0/1; notify only on change */
 void prn_set_synced(int v)
 {
     prn_state *st = prn_state_get();

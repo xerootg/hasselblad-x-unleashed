@@ -1,240 +1,240 @@
-# LaiNES 核心移植笔记（x2nes / 哈苏 X2D II 平台）
+# LaiNES core porting notes (x2nes / Hasselblad X2D II platform)
 
-> 本文档由源码检视自动整理，记录 LaiNES 的版本、文件结构、核心与 SDL2 平台层的
-> 全部接口耦合点、mapper 支持与编译注意事项。目标：在自有平台层（Android NDK，
-> libc++_static）下复用其纯核心，**不改动 LaiNES 核心源码本身**。
+> Automatically compiled from source inspection, this document records the LaiNES version, file structure,
+> all interface coupling points between the core and SDL2 platform layer, mapper support, and build considerations.
+> Goal: reuse the pure core with our own platform layer (Android NDK, libc++_static), **without changing the LaiNES core source itself**.
 
-## 1. 版本与来源
+## 1. Version and source
 
-- 仓库：https://github.com/AndreaOrru/LaiNES （master 分支）
-- 获取方式：`git clone --depth 1`
-- Commit：`1f3d126171104ec57e515641ea3b5291d383ebdf`（short `1f3d126`，2025-11-05，"Updated README"）
-- 本地路径：`C:\Users\tom\Documents\test\x2nes\core\LaiNES\`
-- 上游构建系统：SCons（`SConstruct`），clang++，`-std=c++14 -O3 -march=native`
+- Repository: https://github.com/AndreaOrru/LaiNES (master branch)
+- Obtained via: `git clone --depth 1`
+- Commit: `1f3d126171104ec57e515641ea3b5291d383ebdf` (short `1f3d126`, 2025-11-05, "Updated README")
+- Local path: `C:\Users\tom\Documents\test\x2nes\core\LaiNES\`
+- Upstream build system: SCons (`SConstruct`), clang++, `-std=c++14 -O3 -march=native`
 
-### 许可证（重要，与任务假设略有出入）
+### Licenses (important: differ slightly from the task assumptions)
 
-| 部分 | 许可证 |
+| Component | License |
 |---|---|
-| LaiNES 本体（src/，`LICENSE` 文件） | **BSD 2-Clause**（Copyright (c) 2020, Andrea Orru）。注意：不是 MIT——任务描述里写 MIT，实际 LICENSE 文件是 BSD-2。两者都允许闭源移植，但需保留版权与免责声明。 |
-| `lib/`（blargg Nes_Snd_Emu 0.1.7，Shay Green） | **GNU LGPL**（见 `lib/include/Nes_Apu.h` 头部）。静态链接进 APK/固件时需遵守 LGPL（提供可重链接的目标文件或源码）。移植决策时必须考虑。 |
-| `simpleini/`（git 子模块，brofield/simpleini） | MIT。本克隆未初始化子模块（目录为空）；只有 `src/config.cpp` 用它，而 config 属平台层会被替换，可整体丢弃。 |
+| LaiNES itself (src/, `LICENSE` file) | **BSD 2-Clause** (Copyright (c) 2020, Andrea Orru). Note: not MIT—the task description says MIT, but the actual LICENSE file is BSD-2. Both allow closed-source ports, but copyright notices and disclaimers must be retained. |
+| `lib/` (blargg Nes_Snd_Emu 0.1.7, Shay Green) | **GNU LGPL** (see the header of `lib/include/Nes_Apu.h`). Static linking into an APK/firmware requires LGPL compliance (provide relinkable object files or source). This must be considered when deciding on the port. |
+| `simpleini/` (git submodule, brofield/simpleini) | MIT. The submodule is not initialized in this clone (empty directory); only `src/config.cpp` uses it, and config belongs to the platform layer being replaced, so it can be discarded entirely. |
 
-## 2. 文件清单与分类
+## 2. File inventory and classification
 
-### 2.1 纯核心（无 SDL 依赖，直接复用）
+### 2.1 Pure core (no SDL dependency, reusable directly)
 
-| 文件 | 行数 | 说明 |
+| File | Lines | Description |
 |---|---|---|
-| `src/cpu.cpp` + `src/include/cpu.hpp` | 908 + 41 | 6502 CPU，含全部官方+非法指令、NMI 边沿检测、OAM DMA、开总线行为 |
-| `src/ppu.cpp` + `src/include/ppu.hpp` + `src/palette.inc` | 565 + 123 + 11 | PPU、调色板（含 8 组色彩强调预计算表 nesRgb） |
-| `src/apu.cpp` + `src/include/apu.hpp` | 113 + 21 | APU 包装层：持有全局 `Nes_Apu apu; Blip_Buffer buf;` |
-| `src/cartridge.cpp` + `src/include/cartridge.hpp` | 166 + 30 | iNES 装载、mapper 工厂（switch 实例化）、PRG/CHR 访问路由 |
-| `src/mapper.cpp` + `src/include/mapper.hpp` | 108 + 60 | Mapper 基类：PRG/CHR 页表映射、CHR-RAM、存档状态接口 |
-| `src/joypad.cpp` + `src/include/joypad.hpp` | 58 + 11 | 手柄移位寄存器 + strobe 语义 |
-| `src/savestate.cpp` + `src/include/savestate.hpp` | 271 + 62 | 即时存档（只用 cstdio/cstring/iostream，无 SDL） |
-| `src/mappers/*.cpp` + `src/include/mappers/*.hpp` | 见 §4 | 各 mapper 实现 |
-| `lib/Blip_Buffer.cpp`、`lib/Multi_Buffer.cpp`、`lib/Nes_Apu.cpp`、`lib/Nes_Oscs.cpp`、`lib/Nes_Namco.cpp`、`lib/Nes_Vrc6.cpp`、`lib/Nonlinear_Buffer.cpp`、`lib/apu_snapshot.cpp` | 398/201/417/498/160/231/189/124 | blargg 音频库（LGPL），纯 C++ 无平台依赖 |
-| `lib/include/` | 若干头 | blargg 库头文件（含 `boost/` 兼容头目录） |
+| `src/cpu.cpp` + `src/include/cpu.hpp` | 908 + 41 | 6502 CPU, including all official+unofficial instructions, NMI edge detection, OAM DMA, and open-bus behavior |
+| `src/ppu.cpp` + `src/include/ppu.hpp` + `src/palette.inc` | 565 + 123 + 11 | PPU, palette (including 8 precomputed color-emphasis tables, nesRgb) |
+| `src/apu.cpp` + `src/include/apu.hpp` | 113 + 21 | APU wrapper: holds global `Nes_Apu apu; Blip_Buffer buf;` |
+| `src/cartridge.cpp` + `src/include/cartridge.hpp` | 166 + 30 | iNES loading, mapper factory (switch-based instantiation), PRG/CHR access routing |
+| `src/mapper.cpp` + `src/include/mapper.hpp` | 108 + 60 | Mapper base class: PRG/CHR page-table mapping, CHR-RAM, save-state interface |
+| `src/joypad.cpp` + `src/include/joypad.hpp` | 58 + 11 | Controller shift register + strobe semantics |
+| `src/savestate.cpp` + `src/include/savestate.hpp` | 271 + 62 | Save states (only cstdio/cstring/iostream, no SDL) |
+| `src/mappers/*.cpp` + `src/include/mappers/*.hpp` | See §4 | Mapper implementations |
+| `lib/Blip_Buffer.cpp`, `lib/Multi_Buffer.cpp`, `lib/Nes_Apu.cpp`, `lib/Nes_Oscs.cpp`, `lib/Nes_Namco.cpp`, `lib/Nes_Vrc6.cpp`, `lib/Nonlinear_Buffer.cpp`, `lib/apu_snapshot.cpp` | 398/201/417/498/160/231/189/124 | blargg audio library (LGPL), pure C++ with no platform dependencies |
+| `lib/include/` | Several headers | blargg library headers (including the `boost/` compatibility-header directory) |
 
-核心 + mappers + lib 合计约 6200 行（src 部分），量级非常小。
+The core + mappers + lib total about 6200 lines (src portion), a very small codebase.
 
-### 2.2 SDL2 平台层（X2D 移植时整体替换）
+### 2.2 SDL2 platform layer (replaced entirely for the X2D port)
 
-| 文件 | 行数 | 说明 |
+| File | Lines | Description |
 |---|---|---|
-| `src/main.cpp` | 11 | 入口：`GUI::load_settings() → GUI::init() → GUI::run()` |
-| `src/gui.cpp` + `src/include/gui.hpp` | 476 + 35 | SDL2 窗口/渲染/音频队列/事件循环/菜单装配；**核心回调的实现侧** |
-| `src/menu.cpp` + `src/include/menu.hpp` | 316 + 116 | 菜单 UI（SDL_ttf 文字、vector/functional），还依赖 `dirent.h` 列目录 |
-| `src/config.cpp` + `src/include/config.hpp` | 164 + 42 | INI 设置（SimpleIni 子模块）+ 按键映射；头文件里暴露 `SDL_Scancode` 类型 |
-| `lib/Sound_Queue.cpp` + `lib/include/Sound_Queue.h` | 138 + ~60 | blargg 的 **SDL 音频输出队列**（SDL_OpenAudio + 信号量三缓冲），属平台层而非核心 |
+| `src/main.cpp` | 11 | Entry: `GUI::load_settings() → GUI::init() → GUI::run()` |
+| `src/gui.cpp` + `src/include/gui.hpp` | 476 + 35 | SDL2 window/rendering/audio queue/event loop/menu assembly; **implements the core callbacks** |
+| `src/menu.cpp` + `src/include/menu.hpp` | 316 + 116 | Menu UI (SDL_ttf text, vector/functional), also uses `dirent.h` for directory listing |
+| `src/config.cpp` + `src/include/config.hpp` | 164 + 42 | INI settings (SimpleIni submodule) + key mapping; exposes `SDL_Scancode` in the header |
+| `lib/Sound_Queue.cpp` + `lib/include/Sound_Queue.h` | 138 + ~60 | blargg's **SDL audio output queue** (SDL_OpenAudio + semaphore-based triple buffering), part of the platform layer, not the core |
 
-### 2.3 其它
+### 2.3 Other
 
-- `res/`：font.ttf、init.png、laines_icon.png（仅菜单/窗口用，可丢）
-- `SConstruct`、`.gitmodules`（simpleini 子模块，未初始化）
+- `res/`: font.ttf, init.png, laines_icon.png (menu/window only, can be discarded)
+- `SConstruct`, `.gitmodules` (simpleini submodule, uninitialized)
 
-## 3. 核心与平台层的接口耦合点（移植关键）
+## 3. Core/platform interface coupling points (key to the port)
 
-核心对平台的全部依赖收敛在 **`GUI::` 命名空间的 5 个函数** 上（声明于 `src/include/gui.hpp`，实现在 `src/gui.cpp`）。核心代码（cpu/ppu/apu/joypad/cartridge/mappers/savestate）通过调用这 5 个函数完成所有 I/O：
+All core dependencies on the platform converge on **5 functions in the `GUI::` namespace** (declared in `src/include/gui.hpp`, implemented in `src/gui.cpp`). Core code (cpu/ppu/apu/joypad/cartridge/mappers/savestate) performs all I/O through these 5 functions:
 
 ```cpp
 namespace GUI {
-    u8  get_joypad_state(int n);                        // 输入轮询（核心 → 平台）
-    void new_frame(u32* pixels);                        // 视频帧输出（核心 → 平台）
-    void new_samples(const blip_sample_t* samples, size_t count); // 音频输出（核心 → 平台）
-    bool is_fast_forward();                             // 快进标志查询（核心 → 平台）
-    // 以及 init()/run()/toggle_pause()/set_paused() 等纯平台函数（核心不调用）
+    u8  get_joypad_state(int n);                        // Input polling (core → platform)
+    void new_frame(u32* pixels);                        // Video frame output (core → platform)
+    void new_samples(const blip_sample_t* samples, size_t count); // Audio output (core → platform)
+    bool is_fast_forward();                             // Query fast-forward flag (core → platform)
+    // Plus platform-only functions such as init()/run()/toggle_pause()/set_paused() (not called by the core)
 }
 ```
 
-### 3.1 启动顺序（自写平台层需复刻的时序）
+### 3.1 Startup sequence (ordering a custom platform layer must replicate)
 
 ```
 Cartridge::load(path):
-    读文件 → 解析 iNES 头（mapperNum = (rom[7]&0xF0)|(rom[6]>>4)）
-    → new MapperX(rom)（switch 工厂，见 §4）
-    → PPU::reset()          // 必须先于 CPU::power()，因为 power 会 tick PPU
+    Read file → parse iNES header (mapperNum = (rom[7]&0xF0)|(rom[6]>>4))
+    → new MapperX(rom) (switch factory, see §4)
+    → PPU::reset()          // Must precede CPU::power(), because power ticks the PPU
     → APU::reset()
-    → CPU::power()          // 清状态 + INT<RESET>()
+    → CPU::power()          // Clear state + INT<RESET>()
 ```
 
-`APU::init()` 只需在进程生命周期调一次（设置 96kHz Blip_Buffer、挂 DMC reader、
-IRQ notifier）；`Cartridge::load` 每次换卡/复位都可重入（先 delete 旧 mapper）。
+`APU::init()` is needed only once per process lifetime (sets up the 96kHz Blip_Buffer, DMC reader,
+and IRQ notifier); `Cartridge::load` can be called again on each cartridge change/reset (deletes the old mapper first).
 
-### 3.2 主循环 / 帧驱动
+### 3.2 Main loop / frame driving
 
-平台层每帧调用一次：
+The platform layer calls this once per frame:
 
 ```cpp
-CPU::run_frame();   // 执行 TOTAL_CYCLES = 29781 个 CPU 周期 ≈ 1 帧
+CPU::run_frame();   // Execute TOTAL_CYCLES = 29781 CPU cycles ≈ 1 frame
 ```
 
-- 内部：`remainingCycles += 29781; while (remainingCycles > 0) exec();`
-- 每个 CPU 周期 = **3 次 `PPU::step()`**（`tick_single()` 交错时序，支持子周期
-  精度的开总线/DMA 行为）。
-- 帧末按固定顺序收尾音频（顺序敏感，核心内部自理，平台无需关心）：
-  `APU::run_frame → Cartridge::run_mapper_audio → Cartridge::end_mapper_audio_frame → APU::end_buffer_frame`。
-- 参考节拍：LaiNES 的 SDL 层用 `SDL_GetTicks()` 把循环钳到 60 FPS；X2D 平台
-  用自己的 vsync/定时器钳 60（1.007...）Hz 即可，核心本身不依赖墙钟。
+- Internally: `remainingCycles += 29781; while (remainingCycles > 0) exec();`
+- Each CPU cycle = **3 calls to `PPU::step()`** (`tick_single()` interleaving supports sub-cycle
+  precision for open-bus/DMA behavior).
+- Audio is finalized at frame end in a fixed order (order-sensitive, handled inside the core; no platform involvement needed):
+  `APU::run_frame → Cartridge::run_mapper_audio → Cartridge::end_mapper_audio_frame → APU::end_buffer_frame`.
+- Reference pacing: LaiNES's SDL layer uses `SDL_GetTicks()` to cap the loop at 60 FPS; the X2D platform
+  can use its own vsync/timer to cap at 60 (1.007...) Hz; the core itself does not depend on wall-clock time.
 
-### 3.3 视频帧获取
+### 3.3 Obtaining video frames
 
-- 帧缓冲：**全局 `u32 PPU::pixels[256*240]`**（`src/ppu.cpp:18`）。
-- 交付时机：核心在每帧扫描线进入 POST（第 240 行）dot 0 时主动调用
-  `GUI::new_frame(PPU::pixels)`（`src/ppu.cpp:419`）——即一帧画面渲染完的瞬间。
-- 像素格式：**u32，0x00RRGGBB 布局（alpha 字节恒为 0）**，256×240。
-  SDL 侧用 `SDL_PIXELFORMAT_ARGB8888` + 默认无混合所以 alpha=0 无碍。
-  **X2D/Android 注意**：若目标 surface 需要 alpha（GL RGBA 纹理开 blend、或
-  ANativeWindow RGBA），拷贝时须 `| 0xFF000000` 补 alpha，否则整帧透明。
-- new_frame 回调返回后核心继续写同一缓冲（下帧渲染），平台层应在回调里同步
-  拷贝（约 240KB/帧），或双缓冲。
+- Frame buffer: **global `u32 PPU::pixels[256*240]`** (`src/ppu.cpp:18`).
+- Delivery timing: the core calls
+  `GUI::new_frame(PPU::pixels)` (`src/ppu.cpp:419`) at dot 0 when the scanline enters POST (line 240)—the instant a frame finishes rendering.
+- Pixel format: **u32, 0x00RRGGBB layout (alpha byte always 0)**, 256×240.
+  SDL uses `SDL_PIXELFORMAT_ARGB8888` + no blending by default, so alpha=0 is harmless.
+  **X2D/Android caution**: if the target surface requires alpha (GL RGBA textures with blending enabled, or
+  ANativeWindow RGBA), add alpha with `| 0xFF000000` when copying, or the whole frame will be transparent.
+- After the new_frame callback returns, the core continues writing to the same buffer (rendering the next frame); the platform should synchronously
+  copy it in the callback (about 240KB/frame), or use double buffering.
 
-### 3.4 音频获取
+### 3.4 Obtaining audio
 
-- 格式：**单声道 16-bit（`blip_sample_t` = short），采样率 96000 Hz**，
-  时钟域 1789773 Hz（`APU::init`：`buf.sample_rate(96000); buf.clock_rate(1789773)`）。
-- 交付时机：每帧末 `APU::end_buffer_frame()` 中，`buf.samples_avail() >= 4096`
-  时读出至多 `OUT_SIZE = 4096` 个样本，调用
-  `GUI::new_samples(outBuf, count)`。即**每帧最多一次回调、最多 4096 样本**
-  （~42.7ms @ 96kHz；正常每帧应产出 ~1600 样本，>=4096 才触发，节奏约为
-  每 2-3 帧一次 4096 块——以 Blip_Buffer 实际 avail 为准，回调里按 count 消费即可）。
-- 快进：`GUI::is_fast_forward()` 为 true 时核心会在帧末 `buf.clear()` 丢弃积压，
-  平台层在快进时也应不写入音频队列。
-- 上游消费端是 `lib/Sound_Queue.cpp`（SDL_OpenAudio 96kHz + 3 缓冲信号量）。
-  X2D 移植用 AAudio/Oboe/AAudio 类替代：自建无锁环形缓冲，emu 线程生产、
-  音频线程消费，采样率建议直接 96k（或改 `buf.sample_rate()` 后重配——
-  那行在 `APU::init`，属核心文件，若不想改就迁就 96k）。
+- Format: **mono 16-bit (`blip_sample_t` = short), sample rate 96000 Hz**,
+  clock domain 1789773 Hz (`APU::init`: `buf.sample_rate(96000); buf.clock_rate(1789773)`).
+- Delivery timing: at frame end in `APU::end_buffer_frame()`, when `buf.samples_avail() >= 4096`,
+  read at most `OUT_SIZE = 4096` samples and call
+  `GUI::new_samples(outBuf, count)`. Thus **at most one callback and 4096 samples per frame**
+  (~42.7ms @ 96kHz; normal output is ~1600 samples/frame, triggered only at >=4096, giving roughly
+  one 4096-sample block every 2-3 frames—use actual Blip_Buffer availability and consume count samples in the callback).
+- Fast-forward: when `GUI::is_fast_forward()` is true, the core calls `buf.clear()` at frame end to discard the backlog;
+  the platform should likewise avoid writing to the audio queue during fast-forward.
+- The upstream consumer is `lib/Sound_Queue.cpp` (SDL_OpenAudio 96kHz + 3-buffer semaphore).
+  For the X2D port, replace it with an AAudio/Oboe/AAudio-style implementation: a custom lock-free ring buffer, produced by the emu thread
+  and consumed by the audio thread. Prefer 96k directly (or change `buf.sample_rate()` and reconfigure—
+  that line is in `APU::init`, a core file, so keep 96k if avoiding core changes).
 
-### 3.5 手柄输入注入
+### 3.5 Controller input injection
 
-- 核心通过 `GUI::get_joypad_state(int n)`（n = 0/1）**轮询**按钮状态，无回调、
-  无事件队列；由 `src/joypad.cpp` 在 $4016 strobe 1→0 有效跳变时采样锁存、
-  strobe 高电平期间直读 A 键。
-- 返回 u8 位域（`src/gui.cpp:269` 明确）：
-  `bit0=A, bit1=B, bit2=Select, bit3=Start, bit4=Up, bit5=Down, bit6=Left, bit7=Right`（1=按下）。
-- X2D 接法：把相机物理按键映射进一个 `u8`，在 `get_joypad_state` 实现里返回
-  即可；线程上它只在 emu 线程内被调用，读一个原子/volatile u8 就够。
+- The core **polls** button state through `GUI::get_joypad_state(int n)` (n = 0/1), with no callbacks
+  or event queue; `src/joypad.cpp` samples and latches on the active $4016 strobe 1→0 transition,
+  and reads the A button directly while strobe is high.
+- Returns a u8 bitfield (explicit in `src/gui.cpp:269`):
+  `bit0=A, bit1=B, bit2=Select, bit3=Start, bit4=Up, bit5=Down, bit6=Left, bit7=Right` (1=pressed).
+- X2D integration: map physical camera buttons into a `u8` and return it from the `get_joypad_state`
+  implementation; it is called only on the emu thread, so reading an atomic/volatile u8 is sufficient.
 
-### 3.6 头文件级 SDL 耦合（唯一的"编译期"耦合）
+### 3.6 Header-level SDL coupling (the only "compile-time" coupling)
 
-- `src/include/gui.hpp` include 了 `<SDL2/SDL.h>`（还声明 `SDL_Texture*`、
-  `SDL_Scancode` 返回值——但那些函数只有 menu.cpp/gui.cpp 用）。
-- `src/include/config.hpp` include `<SDL2/SDL.h>`、用 `SDL_Scancode`。
-- **解法**：自建平台层时提供一个替代 `gui.hpp`（放进我们的 include 路径优先于
-  `src/include`），只保留核心真正调用的 5 个原型（§3 开头代码块），去掉 SDL
-  include；或更简单——保留上游 gui.hpp 但给编译器一个空 SDL 头垫片。推荐前者：
-  核心实际只引用 `GUI::new_frame/new_samples/get_joypad_state/is_fast_forward`。
-- 核心源文件里对 `gui.hpp` 的 include 点：`cpu.cpp`（无直接调用）、`ppu.cpp`
-  （new_frame）、`apu.cpp`（new_samples/is_fast_forward）、`joypad.cpp`
-  （get_joypad_state）、`savestate.cpp`（无）。
+- `src/include/gui.hpp` includes `<SDL2/SDL.h>` (also declares `SDL_Texture*`
+  and `SDL_Scancode` return values—but only menu.cpp/gui.cpp use those functions).
+- `src/include/config.hpp` includes `<SDL2/SDL.h>` and uses `SDL_Scancode`.
+- **Solution**: provide a replacement `gui.hpp` for the custom platform layer (put our include path before
+  `src/include`), retaining only the 5 prototypes actually called by the core (code block at the start of §3), with no SDL
+  include; or, more simply, keep upstream gui.hpp but give the compiler an empty SDL header shim. The former is recommended:
+  the core actually references only `GUI::new_frame/new_samples/get_joypad_state/is_fast_forward`.
+- Core source files that include `gui.hpp`: `cpu.cpp` (no direct calls), `ppu.cpp`
+  (new_frame), `apu.cpp` (new_samples/is_fast_forward), `joypad.cpp`
+  (get_joypad_state), `savestate.cpp` (none).
 
-### 3.7 存档（可选功能）
+### 3.7 Save states (optional)
 
-`SaveState::save(path)/load(path)` 纯核心实现，序列化 CPU/PPU/APU/mapper 状态。
-平台层只需在菜单里调它，不需要 SDL。默认文件名基于 ROM 路径派生。
+`SaveState::save(path)/load(path)` is a pure-core implementation that serializes CPU/PPU/APU/mapper state.
+The platform layer need only call it from the menu; no SDL required. Default filenames are derived from the ROM path.
 
-## 4. Mapper 支持清单
+## 4. Supported mappers
 
-工厂在 `src/cartridge.cpp:81-100`（switch）：
+The factory is in `src/cartridge.cpp:81-100` (switch):
 
-| mapper | 板卡/芯片 | 源文件（cpp+hpp 行数） | 备注 |
+| mapper | Board/chip | Source files (cpp+hpp lines) | Notes |
 |---|---|---|---|
-| 0 | NROM | mapper0.hpp（13，纯头文件） | |
+| 0 | NROM | mapper0.hpp (13, header-only) | |
 | 1 | MMC1 | 86 + 39 | |
 | 2 | UNROM | 42 + 34 | |
 | 3 | CNROM | 52 + 36 | |
-| 4 | MMC3 | 87 + 64 | IRQ + scanline 信号 |
-| 5 | MMC5 | 762 + 266 | 最大文件；直接访问 `PPU::ciRam/dot/mask/ctrl` 等内部（ppu.hpp 特意暴露） |
+| 4 | MMC3 | 87 + 64 | IRQ + scanline signals |
+| 5 | MMC5 | 762 + 266 | Largest file; directly accesses internals such as `PPU::ciRam/dot/mask/ctrl` (deliberately exposed by ppu.hpp) |
 | 7 | AxROM | 50 + 31 | |
 | 9 | MMC2 | 104 + 59 | |
 | 10 | MMC4 | 102 + 59 | |
 | 11 | Color Dreams | 36 + 32 | |
-| 24 | VRC6a | 279 + 118 | **含 VRC6 扩展音频**（lib/Nes_Vrc6） |
-| 26 | VRC6b | 复用 Mapper24(rom, true) | 同上 |
+| 24 | VRC6a | 279 + 118 | **Includes VRC6 expansion audio** (lib/Nes_Vrc6) |
+| 26 | VRC6b | Reuses Mapper24(rom, true) | Same as above |
 | 34 | BNROM/NINA-001 | 66 + 43 | |
 | 66 | GxROM | 36 + 32 | |
 
-不支持的 mapper 走 default 分支：stderr 报 "mapper N not supported" 并 return
-（**注意：此时 rom 内存泄漏且 mapper 为旧值——载入失败检查 `Cartridge::loaded()`**）。
+Unsupported mappers take the default branch: print "mapper N not supported" to stderr and return
+(**note: rom memory leaks here and mapper retains its old value—check `Cartridge::loaded()` for load failures**).
 
-## 5. 全局单例 / 静态状态（决定平台层怎么接）
+## 5. Global singletons / static state (determines platform integration)
 
-LaiNES **没有类封装的 Core 对象**，整个模拟器状态是命名空间级全局变量，
-**单实例、非线程安全（emu 必须单线程驱动）**：
+LaiNES **has no class-encapsulated Core object**; all emulator state consists of namespace-level globals,
+**single-instance and not thread-safe (emu must be driven by one thread)**:
 
-| 命名空间 | 全局状态 |
+| Namespace | Global state |
 |---|---|
-| `CPU`（src/cpu.cpp:13-53） | `ram[0x800]`、`A/X/Y/S/PC/P`、`nmi_*`、`irq`、`data_bus`、put/RMW 周期标志、OAM DMA 状态、`remainingCycles`、`ppu_sub_cycle` |
-| `PPU`（src/ppu.cpp:8-30） | `pixels[256*240]`（帧缓冲）、`ciRam[0x800]`、`cgRam[0x20]`、`oamMem[0x100]`、`oam/secOam`、`vAddr/tAddr/fX`、`ctrl/mask/status`、`scanline/dot`、`nesRgb[8][64]` |
-| `APU`（src/apu.cpp:8-12） | `Nes_Apu apu;`（blargg 对象，自含静态表）、`Blip_Buffer buf;`、`outBuf[4096]` |
-| `Cartridge`（src/cartridge.cpp:24-26） | `Mapper* mapper`、`currentRomPath`、`currentMapperId` |
-| `Joypad`（src/joypad.cpp:6-8） | `joypad_bits[2]`、`strobe`、`strobe_was_set_by_put` |
-| `GUI`（src/gui.cpp，平台层） | SDL 窗口/纹理/菜单指针、`pause`、`fast_forward` |
+| `CPU` (src/cpu.cpp:13-53) | `ram[0x800]`, `A/X/Y/S/PC/P`, `nmi_*`, `irq`, `data_bus`, put/RMW cycle flags, OAM DMA state, `remainingCycles`, `ppu_sub_cycle` |
+| `PPU` (src/ppu.cpp:8-30) | `pixels[256*240]` (frame buffer), `ciRam[0x800]`, `cgRam[0x20]`, `oamMem[0x100]`, `oam/secOam`, `vAddr/tAddr/fX`, `ctrl/mask/status`, `scanline/dot`, `nesRgb[8][64]` |
+| `APU` (src/apu.cpp:8-12) | `Nes_Apu apu;` (blargg object, contains its own static tables), `Blip_Buffer buf;`, `outBuf[4096]` |
+| `Cartridge` (src/cartridge.cpp:24-26) | `Mapper* mapper`, `currentRomPath`, `currentMapperId` |
+| `Joypad` (src/joypad.cpp:6-8) | `joypad_bits[2]`, `strobe`, `strobe_was_set_by_put` |
+| `GUI` (src/gui.cpp, platform layer) | SDL window/texture/menu pointers, `pause`, `fast_forward` |
 
-含义：X2D 平台层就是一个"全局驱动器"——init 后在自己的线程里循环
-`CPU::run_frame()`，靠 4 个 GUI 回调收发数据；不存在多实例、也无需加锁
-（音频回调线程只读平台层自己的环形缓冲）。blargg `Nes_Apu` 内部有少量
-静态常量表，线程安全方面与单线程驱动兼容。
+Implication: the X2D platform layer is a "global driver"—after init, loop over
+`CPU::run_frame()` on its own thread, exchanging data through 4 GUI callbacks; there are no multiple instances and no locks are needed
+(the audio callback thread reads only the platform layer's own ring buffer). blargg `Nes_Apu` contains a few
+static constant tables, compatible with single-threaded driving from a thread-safety perspective.
 
-## 6. 编译注意事项（Android NDK / libc++_static）
+## 6. Build considerations (Android NDK / libc++_static)
 
-1. **C++ 标准**：上游 SConstruct 用 `-std=c++14`。C++17 编译应当无碍
-   （无 auto_ptr/throw() 之类古董；`Nes_Oscs.h` 等老代码是 C++98 风格但干净）。
-   用 C++17 或 C++14 均可，无需 C++20。
-2. **STL 依赖（很轻）**：核心实际用到的标准头只有 `<cstdint> <cstring>
-   <cstdio> <cstdlib> <iostream> <string>`；`<vector> <functional> <algorithm>
-   <csignal> <cctype>` 只出现在平台层（menu/gui/config）。libc++_static 全覆盖。
-3. **POSIX 头**：`dirent.h unistd.h sys/stat.h` 只在 menu.cpp/config.cpp
-   （平台层，被替换）。纯核心无 POSIX 依赖，可移植性好。
-4. **需要排除/替换的文件**：`main.cpp gui.cpp menu.cpp config.cpp
-   lib/Sound_Queue.cpp`；同时提供自有 `gui.hpp`（§3.6）与 `GUI::` 5 函数实现。
-   其余 src/ + lib/（除 Sound_Queue）原样编入。
-5. **不用改动核心即可工作的最小平台层**：
-   `GUI::get_joypad_state`（读按键位图）、`GUI::new_frame`（拷贝 256×240×4B，
-   补 alpha 0xFF）、`GUI::new_samples`（写环形缓冲）、`GUI::is_fast_forward`
-   （常返 false 即可）。
-6. **异常/RTTI**：核心未见 try/catch、dynamic_cast；如 NDK 侧想关异常
-   （-fno-exceptions）需处理 `new` 失败路径（核心大量裸 new，正常堆大小无碍，
-   保守起见建议保留默认异常开启）。
-7. **性能**：上游 `-O3 -march=native`；NDK 侧 `-O3` + 对应 ABI（arm64-v8a）即可。
-   LaiNES 以精简著称，单核 60fps 余量很大。
-8. **内存**：Mapper 构造 `new u8[romSize]`（整个 ROM 副本）+ PRG-RAM 8KB 起 +
-   CHR-RAM 8KB；一帧像素 240KB。峰值内存 = ROM 大小 + 数百 KB，X2D 无压力。
-9. **LGPL（lib/）**：静态链接 blargg 库时按 LGPL 要求提供对应目标文件/
-   源码获取途径；若不可接受，可评估整体替换 APU 为其他实现（工作量大，
-   不建议）。LaiNES 本体 BSD-2 只需保留版权声明。
-10. **C++ 一次性初始化**：`APU::init()` 在 `GUI::init()` 里被调（96000Hz）；
-    自有平台层在启动时调一次 `APU::init()`（或自行设置采样率后再 init——
-    采样率硬编码在 apu.cpp `buf.sample_rate(96000)`，不改核心就只能 96k）。
+1. **C++ standard**: upstream SConstruct uses `-std=c++14`. C++17 should compile without issues
+   (no relics such as auto_ptr/throw(); older code such as `Nes_Oscs.h` is C++98-style but clean).
+   Either C++17 or C++14 works; C++20 is unnecessary.
+2. **STL dependencies (very light)**: the core actually uses only the standard headers `<cstdint> <cstring>
+   <cstdio> <cstdlib> <iostream> <string>`; `<vector> <functional> <algorithm>
+   <csignal> <cctype>` appear only in the platform layer (menu/gui/config). libc++_static covers all of them.
+3. **POSIX headers**: `dirent.h unistd.h sys/stat.h` appear only in menu.cpp/config.cpp
+   (platform layer, replaced). The pure core has no POSIX dependencies and is highly portable.
+4. **Files to exclude/replace**: `main.cpp gui.cpp menu.cpp config.cpp
+   lib/Sound_Queue.cpp`; also provide a custom `gui.hpp` (§3.6) and implementations of the 5 `GUI::` functions.
+   Compile the rest of src/ + lib/ (except Sound_Queue) unchanged.
+5. **Minimal platform layer that works without core changes**:
+   `GUI::get_joypad_state` (read button bitmap), `GUI::new_frame` (copy 256×240×4B,
+   add alpha 0xFF), `GUI::new_samples` (write ring buffer), `GUI::is_fast_forward`
+   (can always return false).
+6. **Exceptions/RTTI**: no try/catch or dynamic_cast seen in the core; disabling exceptions on the NDK side
+   (-fno-exceptions) requires handling `new` failures (the core uses many raw new calls; normal heap sizes are fine,
+   but conservatively, keep exceptions enabled by default).
+7. **Performance**: upstream uses `-O3 -march=native`; on NDK, `-O3` + the target ABI (arm64-v8a) is sufficient.
+   LaiNES is known for being lean, with ample single-core headroom at 60fps.
+8. **Memory**: Mapper construction allocates `new u8[romSize]` (a full ROM copy) + PRG-RAM starting at 8KB +
+   CHR-RAM 8KB; one pixel frame is 240KB. Peak memory = ROM size + a few hundred KB, easily handled by the X2D.
+9. **LGPL (lib/)**: static linking of blargg requires providing the corresponding object files/
+   source access as required by LGPL; if unacceptable, consider replacing the entire APU implementation (substantial work,
+   not recommended). LaiNES itself is BSD-2 and only requires retaining copyright notices.
+10. **One-time C++ initialization**: `APU::init()` is called in `GUI::init()` (96000Hz);
+    the custom platform layer should call `APU::init()` once at startup (or set the sample rate before init—
+    the rate is hardcoded in apu.cpp as `buf.sample_rate(96000)`, so without core changes it must remain 96k).
 
-## 7. 附：testrom 验证记录
+## 7. Appendix: testrom validation record
 
-- `nestest.nes`：24,592 B = 16(iNES头)+16KB PRG+8KB CHR，头 `4E 45 53 1A`，
-  PRG=01 CHR=01，flags6/7=0 → mapper 0 水平镜像。来源：
-  github.com/christopherpow/nes-test-roms（模拟器开发者社区公测合集）。
-  用途：CPU 指令级正确性（自动模式 $C000 起，日志对比）。
-- `240pee.nes`（240p Test Suite for NES v0.23，作者 Damian Yerrick/pinobatch，
-  官方 GitHub Release 公开发布）：65,552 B = 16+64KB PRG+0 CHR(CHR-RAM)，
-  头 `4E 45 53 1A 04 00 21 08` → mapper 2（UNROM），垂直镜像，NES 2.0 头。
-  两者的 mapper（0、2）LaiNES 均支持。均为明确公开分发，非任天堂商业 ROM。
+- `nestest.nes`: 24,592 B = 16(iNES header)+16KB PRG+8KB CHR, header `4E 45 53 1A`,
+  PRG=01 CHR=01, flags6/7=0 → mapper 0, horizontal mirroring. Source:
+  github.com/christopherpow/nes-test-roms (public test collection from the emulator developer community).
+  Purpose: CPU instruction-level correctness (automated mode starts at $C000, compare logs).
+- `240pee.nes` (240p Test Suite for NES v0.23, by Damian Yerrick/pinobatch,
+  publicly distributed via the official GitHub Release): 65,552 B = 16+64KB PRG+0 CHR(CHR-RAM),
+  header `4E 45 53 1A 04 00 21 08` → mapper 2 (UNROM), vertical mirroring, NES 2.0 header.
+  LaiNES supports both mappers (0, 2). Both are explicitly publicly distributed, not commercial Nintendo ROMs.

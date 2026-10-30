@@ -1,9 +1,9 @@
-/* dumpfmt.c — QVariant 风格输出格式化实现 */
+/* dumpfmt.c — QVariant-style output formatting implementation */
 #include "dumpfmt.h"
 
 #include <string.h>
 
-/* ay → 小写 hex 连写(原版 "583250ab" 实测); 其余数组 [a, b] */
+/* ay → contiguous lowercase hex (observed original output: "583250ab"); other arrays [a, b] */
 static void dump_array(FILE *out, DBusMessageIter *v)
 {
     DBusMessageIter sub;
@@ -18,7 +18,7 @@ static void dump_array(FILE *out, DBusMessageIter *v)
         } while (dbus_message_iter_next(&sub));
         return;
     }
-    if (elem == DBUS_TYPE_DICT_ENTRY) {   /* a{sv} → Item {k = v, ...}(空 → Item {}) */
+    if (elem == DBUS_TYPE_DICT_ENTRY) {   /* a{sv} → Item {k = v, ...} (empty → Item {}) */
         fprintf(out, "Item {");
         int first = 1;
         do {
@@ -109,7 +109,7 @@ void dumpfmt_value(FILE *out, DBusMessageIter *v)
     case DBUS_TYPE_SIGNATURE: {
         const char *s = NULL;
         dbus_message_iter_get_basic(v, &s);
-        if (!s || !*s) fprintf(out, "<empty>");   /* 原版空串实测 */
+        if (!s || !*s) fprintf(out, "<empty>");   /* Observed for empty strings in original */
         else fputs(s, out);
         return;
     }
@@ -157,16 +157,16 @@ void dumpfmt_signal_frame(FILE *out, const char *member,
     int i = 0;
     for (int more = dbus_message_iter_init(args, &sub); more;
          more = dbus_message_iter_next(&sub), i++) {
-        fputs("     ", out);                       /* 原版 5 空格缩进 */
+        fputs("     ", out);                       /* Original uses five-space indentation */
         if (i < n_names && argnames[i] && argnames[i][0])
             fprintf(out, "%s = ", argnames[i]);
         dumpfmt_value(out, &sub);
         fputc('\n', out);
     }
-    fputc('\n', out);                              /* 帧后空行 */
+    fputc('\n', out);                              /* Blank line after frame */
 }
 
-/* D-Bus 签名 → Qt 类型名(原版列表输出风格) */
+/* D-Bus signature → Qt type name (original list-output style) */
 const char *dumpfmt_qttype(const char *sig)
 {
     if (!sig || !sig[0]) return "?";
@@ -194,5 +194,5 @@ const char *dumpfmt_qttype(const char *sig)
     if (!strcmp(sig, "aa{sv}")) return "QList<QVariantMap>";
     if (!strcmp(sig, "au")) return "QList<uint>";
     if (!strcmp(sig, "ai")) return "QList<int>";
-    return sig;                       /* 其余容器原样展示签名 */
+    return sig;                       /* Display other containers as their signature */
 }

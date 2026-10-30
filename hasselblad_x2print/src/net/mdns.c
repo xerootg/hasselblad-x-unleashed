@@ -1,15 +1,16 @@
-/* mdns.c — 最小 mDNS/DNS-SD 查询客户端实现
+/* mdns.c — Minimal mDNS/DNS-SD query client implementation
  *
- * 协议要点（RFC 1035 报文格式 + RFC 6762 mDNS）：
- *  - 组播地址 224.0.0.251:5353；查询 ID 置 0、不置 RD。
- *  - 名字压缩：标签前缀 0xC0 指针指向报文内偏移，只允许向前指，解码需防环。
- *  - 发现流程：查 _ipp._tcp.local 与 _universal._sub._ipp._tcp.local 的 PTR，
- *    从应答各节收集 PTR(实例名)/SRV(端口+主机)/TXT(能力键值)/A(IP)，
- *    缺 SRV/A 的实例再定向补查。
+ * Protocol notes (RFC 1035 message format + RFC 6762 mDNS):
+ *  - Multicast address 224.0.0.251:5353; query ID is 0, RD is not set.
+ *  - Name compression: 0xC0 label prefix points to an offset in the message; pointers may
+ *    only point backward, and decoder must prevent loops.
+ *  - Discovery: query PTR for _ipp._tcp.local and _universal._sub._ipp._tcp.local; collect
+ *    PTR (instance name)/SRV (port+host)/TXT (capability key/value)/A (IP) from all response
+ *    sections; send targeted follow-up queries for instances missing SRV/A.
  *
- * 无 avahi、无依赖，纯 POSIX socket + select 超时。
+ * No avahi or other dependencies; POSIX sockets + select timeouts only.
  */
-#define _DEFAULT_SOURCE /* Linux/glibc 下启用 IP_ADD_MEMBERSHIP 等扩展声明 */
+#define _DEFAULT_SOURCE /* Enable declarations for Linux/glibc extensions such as IP_ADD_MEMBERSHIP */
 
 #include "mdns.h"
 #include "netlog.h"
@@ -30,11 +31,11 @@
 #define MDNS_GROUP "224.0.0.251"
 #define MDNS_PORT  5353
 #define DNS_MAX_NAME 256
-#define PKT_MAX     9000 /* jumbo 安全上限 */
+#define PKT_MAX     9000 /* Safe jumbo-packet limit */
 
-/* ---------------- 基础编解码 ---------------- */
+/* ---------------- Basic encoding/decoding ---------------- */
 
-/* 编码 QNAME：点分名字 → 标签序列（不含压缩，查询方向无需压缩） */
+/* Encode QNAME: dotted name → label sequence (no compression; queries do not need it) */
 static int wr_qname(unsigned char *p, int cap, int pos, const char *name)
 {
     const char *s = name;
@@ -49,11 +50,12 @@ static int wr_qname(unsigned char *p, int cap, int pos, const char *name)
         s = e + 1;
     }
     if (pos >= cap) return -1;
-    p[pos++] = 0; /* 根标签 */
+    p[pos++] = 0; /* Root label */
     return pos;
 }
 
-/* 解码（可能压缩的）域名；*consumed 返回顺序读取流的下一字节位置（遇指针则是指针后） */
+/* Decode (possibly compressed) domain name; *consumed receives next sequential-stream byte
+ * (after pointer if a pointer was encountered) */
 static int rd_name(const unsigned char *p, int plen, int pos,
                    char *out, int cap, int *consumed)
 {
@@ -64,16 +66,16 @@ static int rd_name(const unsigned char *p, int plen, int pos,
     for (;;) {
         if (pos < 0 || pos >= plen) return -1;
         unsigned char b = p[pos];
-        if ((b & 0xC0) == 0xC0) { /* 压缩指针 */
+        if ((b & 0xC0) == 0xC0) { /* Compression pointer */
             if (pos + 1 >= plen) return -1;
             int off = ((b & 0x3F) << 8) | p[pos + 1];
             if (*consumed < 0) *consumed = pos + 2;
-            if (off >= pos) return -1;   /* 只允许向前指，防环 */
+            if (off >= pos) return -1;   /* Backward pointers only; prevent loops */
             pos = off;
-            if (++jumps > 8) return -1;  /* 二次保险 */
+            if (++jumps > 8) return -1;  /* Additional safeguard */
             continue;
         }
-        if (b == 0) { /* 根标签，结束 */
+        if (b == 0) { /* Root label; end */
             if (*consumed < 0) *consumed = pos + 1;
             return (int)len;
         }
@@ -92,7 +94,7 @@ static int rd_name(const unsigned char *p, int plen, int pos,
     }
 }
 
-/* 构造一条查询报文；rd 置位 Recursion Desired（单播公网查询用，mDNS 不置） */
+/* Build a query message; set rd=Recursion Desired for unicast public DNS (not for mDNS) */
 static int make_query(unsigned char *pkt, int cap, int id, int rd,
                       const char *qname, int qtype)
 {
@@ -110,9 +112,9 @@ static int make_query(unsigned char *pkt, int cap, int id, int rd,
     return pos;
 }
 
-/* ---------------- 应答解析 ---------------- */
+/* ---------------- Response parsing ---------------- */
 
-/* 文本化 TXT：长度前缀串拼接 "k=v;k=v" */
+/* Convert TXT to text: concatenate length-prefixed strings as "k=v;k=v" */
 static void txt_to_text(const unsigned char *rd, int rlen, char *out, int cap)
 {
     int p = 0, o = 0;
@@ -133,7 +135,7 @@ static void txt_to_text(const unsigned char *rd, int rlen, char *out, int cap)
 int mdns_parse_reply(const unsigned char *pkt, int len, mdns_rr_cb cb, void *ud)
 {
     if (!pkt || len < 12) return -1;
-    if (!(pkt[2] & 0x80)) return -1; /* 必须 QR=1（应答） */
+    if (!(pkt[2] & 0x80)) return -1; /* QR must be 1 (response) */
     int qd = (pkt[4] << 8) | pkt[5];
     int an = (pkt[6] << 8) | pkt[7];
     int ns = (pkt[8] << 8) | pkt[9];
@@ -141,7 +143,7 @@ int mdns_parse_reply(const unsigned char *pkt, int len, mdns_rr_cb cb, void *ud)
     int pos = 12;
     char name[DNS_MAX_NAME];
 
-    for (int i = 0; i < qd; i++) { /* 跳过 question 区 */
+    for (int i = 0; i < qd; i++) { /* Skip question section */
         int used;
         if (rd_name(pkt, len, pos, name, sizeof(name), &used) < 0) return -1;
         pos = used + 4;
@@ -202,7 +204,7 @@ int mdns_parse_reply(const unsigned char *pkt, int len, mdns_rr_cb cb, void *ud)
             txt_to_text(rd, rlen, rr.text, sizeof(rr.text));
             break;
         default:
-            break; /* 未知类型：text 留空，不崩 */
+            break; /* Unknown type: leave text empty, do not crash */
         }
         if (cb) cb(ud, &rr);
         pos += rlen;
@@ -210,7 +212,7 @@ int mdns_parse_reply(const unsigned char *pkt, int len, mdns_rr_cb cb, void *ud)
     return 0;
 }
 
-/* ---------------- 单播查询（自测用） ---------------- */
+/* ---------------- Unicast query (for self-test) ---------------- */
 
 int mdns_query_unicast(const char *server_ip, int port, const char *qname,
                        int qtype, unsigned char *ans, int ans_max, int timeout_ms)
@@ -226,7 +228,7 @@ int mdns_query_unicast(const char *server_ip, int port, const char *qname,
     dst.sin_family = AF_INET;
     dst.sin_port = htons((unsigned short)port);
     if (inet_pton(AF_INET, server_ip, &dst.sin_addr) != 1) {
-        LOGE("非法服务器地址: %s", server_ip);
+        LOGE("Invalid server address: %s", server_ip);
         close(fd);
         return -1;
     }
@@ -248,16 +250,16 @@ int mdns_query_unicast(const char *server_ip, int port, const char *qname,
     int n = (int)recv(fd, ans, (size_t)ans_max, 0);
     close(fd);
     if (n < 0) {
-        LOGE("recv 超时/失败: %s", strerror(errno));
+        LOGE("recv timed out/failed: %s", strerror(errno));
         return -2;
     }
     if (n < 12) return -1;
-    if ((ans[0] << 8 | ans[1]) != id) return -1; /* 应答 ID 不匹配 */
-    LOGD("单播应答 %d 字节 (rcode=%d)", n, ans[3] & 0x0F);
+    if ((ans[0] << 8 | ans[1]) != id) return -1; /* Response ID mismatch */
+    LOGD("Unicast response %d bytes (rcode=%d)", n, ans[3] & 0x0F);
     return n;
 }
 
-/* ---------------- 组播发现 ---------------- */
+/* ---------------- Multicast discovery ---------------- */
 
 static uint64_t now_ms(void)
 {
@@ -271,7 +273,7 @@ typedef struct {
     int n, max;
 } col_t;
 
-/* 按实例名找槽位，没有则新增；满/异常返回 -1 */
+/* Find slot by instance name or add one; return -1 if full/error */
 static int slot_of(col_t *c, const char *instance)
 {
     if (!instance || !instance[0]) return -1;
@@ -286,18 +288,18 @@ static int slot_of(col_t *c, const char *instance)
 static void txt_merge(mdns_service_t *s, const char *kv)
 {
     if (!kv || !kv[0]) return;
-    if (strstr(s->txt, kv)) return; /* 粗去重 */
+    if (strstr(s->txt, kv)) return; /* Coarse deduplication */
     if (s->txt[0]) strncat(s->txt, ";", sizeof(s->txt) - strlen(s->txt) - 1);
     strncat(s->txt, kv, sizeof(s->txt) - strlen(s->txt) - 1);
 }
 
-/* 应答收集器：PTR 建槽，SRV/TXT 补槽，A 反查主机 */
+/* Response collector: PTR creates slot, SRV/TXT fill it, A resolves host */
 static void col_cb(void *ud, const mdns_rr_t *rr)
 {
     col_t *c = (col_t *)ud;
     switch (rr->type) {
     case MDNS_T_PTR:
-        /* 只关心 _ipp._tcp 族（含 _universal._sub._ipp._tcp 子类型） */
+        /* Only handle _ipp._tcp family (including _universal._sub._ipp._tcp subtype) */
         if (strstr(rr->name, "_ipp._tcp") && rr->text[0]) {
             int i = slot_of(c, rr->text);
             if (i >= 0 && strstr(rr->name, "_universal._sub")) c->svc[i].universal = 1;
@@ -330,24 +332,26 @@ static void col_cb(void *ud, const mdns_rr_t *rr)
     }
 }
 
-/* ---------------- 组播接口选择(真机 ENODEV 修复, NOTES §15 遗留) ----------------
- * 相机多接口(wlan0/rndis0/lo)且默认路由不指向热点时, imr_interface=INADDR_ANY
- * 由内核自行挑口——挑到无组播路由的接口即 ENODEV("No such device")。
- * 修法: SIOCGIFCONF 显式枚举 IPv4 接口(不用 getifaddrs——老 bionic 没有),
- * 按优先级逐个 IP_ADD_MEMBERSHIP:
- *   显式 ifname(-i/调用方指定) > wlan0 > 其它非环回已配置接口 > 环回
- * 加入成功同时设 IP_MULTICAST_IF —— 否则默认路由在 rndis0 时组播查询从
- * rndis0 发出, 热点里的打印机永远收不到。全部失败退回 legacy 单播应答模式,
- * 仅告警不中止(与 WSL 行为一致)。 */
+/* ---------------- Multicast interface selection (camera ENODEV fix, NOTES §15) ----------------
+ * The camera has multiple interfaces (wlan0/rndis0/lo). If the default route does not point
+ * to the hotspot, imr_interface=INADDR_ANY lets the kernel choose an interface; selecting
+ * one without a multicast route causes ENODEV ("No such device").
+ * Fix: enumerate IPv4 interfaces with SIOCGIFCONF (not getifaddrs, unavailable on older
+ * bionic) and try IP_ADD_MEMBERSHIP by priority:
+ *   explicit ifname (-i/caller supplied) > wlan0 > configured non-loopback > loopback.
+ * On success, also set IP_MULTICAST_IF; otherwise, with default route on rndis0, multicast
+ * queries leave via rndis0 and the hotspot printer never receives them. If all attempts
+ * fail, fall back to legacy unicast-response mode and warn without aborting (matches WSL).
+ */
 typedef struct {
     char           name[IF_NAMESIZE];
-    struct in_addr addr;   /* 该接口 IPv4 地址(network 序) */
-    int            score;  /* 越大越优先: 3=显式指定 2=wlan0 1=非环回 0=环回 */
+    struct in_addr addr;   /* Interface IPv4 address (network byte order) */
+    int            score;  /* Higher is preferred: 3=explicit, 2=wlan0, 1=non-loopback, 0=loopback */
 } mdns_ifc_t;
 
 static int enum_v4_ifs(int sock, const char *want, mdns_ifc_t *out, int max)
 {
-    /* Linux/Android 的 ifreq 定长(sizeof=32, 无 sa_len 变长), 逐条步进 */
+    /* Linux/Android ifreq has fixed size (sizeof=32, no variable sa_len); advance entry by entry */
     static char buf[4096];
     struct ifconf ifc;
     memset(&ifc, 0, sizeof ifc);
@@ -363,7 +367,7 @@ static int enum_v4_ifs(int sock, const char *want, mdns_ifc_t *out, int max)
         struct ifreq *r = (struct ifreq *)p;
         struct sockaddr_in *sa = (struct sockaddr_in *)&r->ifr_addr;
         if (sa->sin_family != AF_INET) continue;
-        if (sa->sin_addr.s_addr == 0) continue;             /* 未配置地址的口(如 DHCP 前) */
+        if (sa->sin_addr.s_addr == 0) continue;             /* Interface has no address (e.g. before DHCP) */
         if (n >= max) break;
         snprintf(out[n].name, sizeof out[n].name, "%s", r->ifr_name);
         out[n].addr = sa->sin_addr;
@@ -371,24 +375,24 @@ static int enum_v4_ifs(int sock, const char *want, mdns_ifc_t *out, int max)
                      : sa->sin_addr.s_addr == htonl(INADDR_LOOPBACK) ? 0 : 1;
         if (want && want[0] && !strcmp(r->ifr_name, want)) out[n].score = 3;
         if (out[n].score >= 2)
-            LOGI("mDNS 组播候选接口: %s %s (prio=%d)", out[n].name,
+            LOGI("mDNS multicast candidate interface: %s %s (priority=%d)", out[n].name,
                  inet_ntoa(out[n].addr), out[n].score);
         n++;
     }
     if (want && want[0]) {
         int seen = 0;
         for (int i = 0; i < n; i++) if (!strcmp(out[i].name, want)) seen = 1;
-        if (!seen) LOGW("mDNS: 指定接口 %s 无 IPv4 地址(未连网?), 按优先级回落", want);
+        if (!seen) LOGW("mDNS: requested interface %s has no IPv4 address (not connected?), falling back by priority", want);
     }
     return n;
 }
 
-/* 按优先级试加组播组; 0=成功(chosen=接口名), -1=全部失败 */
+/* Join multicast group by priority; 0=success (chosen=interface name), -1=all failed */
 static int join_mcast_group(int fd, const char *want, char *chosen, size_t chosen_cap)
 {
     mdns_ifc_t ifs[24];
     int n = enum_v4_ifs(fd, want, ifs, 24);
-    for (int i = 1; i < n; i++) {                           /* score 稳定降序(n 很小) */
+    for (int i = 1; i < n; i++) {                           /* Stable descending score (n is small) */
         mdns_ifc_t t = ifs[i];
         int j = i - 1;
         while (j >= 0 && ifs[j].score < t.score) { ifs[j + 1] = ifs[j]; j--; }
@@ -400,17 +404,17 @@ static int join_mcast_group(int fd, const char *want, char *chosen, size_t chose
     for (int i = 0; i < n; i++) {
         mr.imr_interface = ifs[i].addr;
         if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mr, sizeof mr) == 0) {
-            /* 查询报文也从这个口发(默认路由不在热点网段时的关键一步) */
+            /* Send query messages from this interface too (critical when default route is not on hotspot subnet) */
             if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF,
                            &ifs[i].addr, sizeof(struct in_addr)) != 0)
-                LOGW("IP_MULTICAST_IF(%s) 失败: %s(查询可能走错出口)",
+                LOGW("IP_MULTICAST_IF(%s) failed: %s (queries may use wrong interface)",
                      ifs[i].name, strerror(errno));
             snprintf(chosen, chosen_cap, "%s", ifs[i].name);
             return 0;
         }
-        LOGD("mDNS 经 %s 加入组播失败: %s", ifs[i].name, strerror(errno));
+        LOGD("mDNS failed to join multicast via %s: %s", ifs[i].name, strerror(errno));
     }
-    /* 兜底: INADDR_ANY(单接口/默认路由明确的常规环境, 旧版行为) */
+    /* Fallback: INADDR_ANY (normal environments with one interface/known default route; legacy behavior) */
     mr.imr_interface.s_addr = htonl(INADDR_ANY);
     if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mr, sizeof mr) == 0) {
         snprintf(chosen, chosen_cap, "any");
@@ -434,15 +438,15 @@ int mdns_discover_ipp_if(mdns_service_t *out, int max_out, int total_ms, const c
     setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
 #endif
 
-    /* 尽量绑 5353（打印机常把应答发往 5353）；被 avahi 占用时退回临时端口，
-     * 此时按 RFC 6762 legacy 查询规则打印机会单播应答到我们的源端口。 */
+    /* Try to bind 5353 (printers commonly send responses there); if avahi owns it, use an
+     * ephemeral port, in which case printers unicast to our source port per RFC 6762 legacy query rules. */
     struct sockaddr_in la;
     memset(&la, 0, sizeof(la));
     la.sin_family = AF_INET;
     la.sin_addr.s_addr = htonl(INADDR_ANY);
     la.sin_port = htons(MDNS_PORT);
     if (bind(fd, (struct sockaddr *)&la, sizeof(la)) != 0) {
-        LOGW("绑定 :5353 失败(%s)，退回临时端口(legacy 单播应答模式)", strerror(errno));
+        LOGW("Failed to bind :5353 (%s); using ephemeral port (legacy unicast response mode)", strerror(errno));
         la.sin_port = 0;
         if (bind(fd, (struct sockaddr *)&la, sizeof(la)) != 0) {
             LOGE("bind: %s", strerror(errno));
@@ -452,9 +456,9 @@ int mdns_discover_ipp_if(mdns_service_t *out, int max_out, int total_ms, const c
     } else {
         char chosen[IF_NAMESIZE] = "any";
         if (join_mcast_group(fd, ifname, chosen, sizeof chosen) == 0)
-            LOGI("mDNS 组播加入成功: 经接口 %s (查询/收包同口)", chosen);
+            LOGI("mDNS multicast joined via interface %s (same interface for query/receive)", chosen);
         else
-            LOGW("mDNS 组播加入全部失败(%s)——退化 legacy 单播应答模式",
+            LOGW("All mDNS multicast joins failed (%s); falling back to legacy unicast response mode",
                  strerror(errno));
     }
     int noloop = 0;
@@ -475,7 +479,7 @@ int mdns_discover_ipp_if(mdns_service_t *out, int max_out, int total_ms, const c
         int64_t el = (int64_t)(now_ms() - t0);
         if (el >= total_ms) break;
 
-        /* 每 ~1s 重发 PTR 查询（mDNS 丢包常见） */
+        /* Retransmit PTR query about every second (mDNS packet loss is common) */
         if (el - last_ptr >= 1000) {
             int qlen = make_query(q, sizeof(q), 0, 0, "_ipp._tcp.local", MDNS_T_PTR);
             if (qlen > 0) sendto(fd, q, (size_t)qlen, 0, (struct sockaddr *)&dst, sizeof(dst));
@@ -483,7 +487,7 @@ int mdns_discover_ipp_if(mdns_service_t *out, int max_out, int total_ms, const c
             if (qlen > 0) sendto(fd, q, (size_t)qlen, 0, (struct sockaddr *)&dst, sizeof(dst));
             last_ptr = el;
         }
-        /* 对已发现但缺 SRV/TXT/A 的服务定向补查 */
+        /* Send targeted follow-up queries for discovered services missing SRV/TXT/A */
         if (el - last_extra >= 1200) {
             for (int i = 0; i < col.n; i++) {
                 mdns_service_t *s = &col.svc[i];
@@ -501,7 +505,7 @@ int mdns_discover_ipp_if(mdns_service_t *out, int max_out, int total_ms, const c
         }
 
         int wait = total_ms - (int)el;
-        if (wait > 300) wait = 300; /* 小步等待，保证重发计时器及时 */
+        if (wait > 300) wait = 300; /* Short waits keep retransmission timer responsive */
         fd_set rf;
         FD_ZERO(&rf);
         FD_SET(fd, &rf);
@@ -510,7 +514,7 @@ int mdns_discover_ipp_if(mdns_service_t *out, int max_out, int total_ms, const c
         if (r > 0) {
             int n = (int)recv(fd, pktbuf, sizeof(pktbuf), 0);
             if (n >= 12 && mdns_parse_reply(pktbuf, n, col_cb, &col) == 0)
-                LOGD("mDNS 应答 %d 字节，已知服务 %d 个", n, col.n);
+                LOGD("mDNS response %d bytes, known services %d", n, col.n);
         }
     }
     close(fd);

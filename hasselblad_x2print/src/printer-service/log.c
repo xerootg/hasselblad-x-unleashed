@@ -1,6 +1,7 @@
-/* log.c — 分级日志实现
- * 输出: stderr + 可选文件(默认 /data/x2print/log/service.log)
- * 滚动: 文件超过 PRN_LOG_MAX 时截断重写(freopen "w"), 运行中每次写前检查
+/* log.c — Leveled logging implementation
+ * Output: stderr + optional file (default /data/x2print/log/service.log)
+ * Rotation: truncate and rewrite with freopen("w") when file exceeds PRN_LOG_MAX;
+ * check before each write while running.
  */
 #include "log.h"
 #include <stdio.h>
@@ -11,7 +12,7 @@
 #include <sys/types.h>
 #include <errno.h>
 
-#define PRN_LOG_MAX (256 * 1024)   /* 256 KB 截断 */
+#define PRN_LOG_MAX (256 * 1024)   /* Truncate at 256 KB */
 
 static FILE *g_logf = NULL;
 static int   g_level = PRN_LOG_INFO;
@@ -27,7 +28,7 @@ static const char *lvl_name(int l)
     }
 }
 
-/* 递归建目录(a/b/c), 成功或已存在返回 0 */
+/* Recursively create directories (a/b/c); return 0 on success or if already present */
 int prn_mkdir_p(const char *path)
 {
     char buf[512];
@@ -51,7 +52,7 @@ void prn_log_init(const char *file, int level)
     if (strlen(file) >= sizeof(g_path)) { fprintf(stderr, "log path too long\n"); return; }
     strcpy(g_path, file);
 
-    /* 建父目录: 找最后一个 '/' */
+    /* Create parent directory: find the last '/' */
     char dir[512];
     strcpy(dir, g_path);
     char *slash = strrchr(dir, '/');
@@ -60,7 +61,7 @@ void prn_log_init(const char *file, int level)
         if (prn_mkdir_p(dir) != 0)
             fprintf(stderr, "log: mkdir %s failed: %s\n", dir, strerror(errno));
     }
-    /* 超限截断: 以追加打开前检查大小 */
+    /* Truncate if over the limit: check size before opening in append mode */
     struct stat st;
     if (stat(g_path, &st) == 0 && st.st_size > PRN_LOG_MAX)
         g_logf = fopen(g_path, "w");
@@ -92,10 +93,10 @@ void prn_log_raw(int level, const char *fmt, ...)
     va_end(ap);
 
     if (!g_logf) return;
-    /* 运行中滚动 */
+    /* Rotate while running */
     long sz = ftell(g_logf);
     if (sz > PRN_LOG_MAX) {
-        FILE *nf = freopen(g_path, "w", g_logf);   /* 失败会关掉原流 */
+        FILE *nf = freopen(g_path, "w", g_logf);   /* Failure closes the original stream */
         if (!nf) { g_logf = NULL; return; }
         g_logf = nf;
         fprintf(g_logf, "%s I log truncated (was %ld bytes)\n", ts, sz);

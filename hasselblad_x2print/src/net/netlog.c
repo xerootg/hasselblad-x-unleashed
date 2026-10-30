@@ -1,4 +1,4 @@
-/* netlog.c — 日志实现：默认 stderr，可被 service 层钩子接管 */
+/* netlog.c — Logging implementation: stderr by default; can be taken over by a service-layer hook */
 #include "netlog.h"
 
 #include <stdio.h>
@@ -17,17 +17,17 @@ void x2p_netlog(x2p_log_level_t lvl, const char *fmt, ...)
 {
     va_list ap;
     if (lvl < g_level) return;
-    if (g_hook) { /* 有钩子则全部交给 service 层 */
+    if (g_hook) { /* Hand all output to the service layer when a hook is registered */
         va_start(ap, fmt);
         g_hook(lvl, fmt, ap);
         va_end(ap);
         return;
     }
-    /* 默认：[级别] 消息 → stderr */
+    /* Default: [level] message → stderr */
     va_start(ap, fmt);
     fprintf(stderr, "%s ", lvl_tag[lvl & 3]);
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
-    (void)time(NULL); /* 预留：需要时间戳时在此扩展 */
+    (void)time(NULL); /* Reserved for adding timestamps if needed */
 }

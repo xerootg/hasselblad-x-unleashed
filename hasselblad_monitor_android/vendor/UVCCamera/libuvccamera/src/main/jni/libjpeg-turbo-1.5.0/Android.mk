@@ -29,10 +29,10 @@ include $(CLEAR_VARS)
 
 # CFLAGS := -Werror
 
-#生成するモジュール名
+#Name of the module to generate
 LOCAL_MODULE    := jpeg-turbo1500_static
 
-#インクルードファイルのパスを指定
+#Specify include file paths
 LOCAL_C_INCLUDES := \
         $(LOCAL_PATH)/ \
         $(LOCAL_PATH)/include \
@@ -43,20 +43,20 @@ LOCAL_EXPORT_C_INCLUDES := \
         $(LOCAL_PATH)/include \
         $(LOCAL_PATH)/simd \
 
-#コンパイラのオプションフラグを指定
+#Specify compiler option flags
 LOCAL_CFLAGS := $(LOCAL_C_INCLUDES:%=-I%)
 LOCAL_CFLAGS += -DANDROID_NDK
 
-#リンクするライブラリを指定(静的モジュールにする時は不要)
+#Specify libraries to link (not needed for a static module)
 #LOCAL_LDLIBS := -L$(SYSROOT)/usr/lib -ldl	# to avoid NDK issue(no need for static library)
 
-#このモジュールを外部モジュールとしてリンクする時のライブラリを指定
+#Specify libraries to use when linking this module as an external module
 
 LOCAL_ARM_MODE := arm
 
 LOCAL_ASMFLAGS += -DELF
 
-# コンパイル・リンクするソースファイル
+# Source files to compile and link
 
 LOCAL_SRC_FILES += \
 	jcapimin.c \
@@ -118,7 +118,7 @@ LOCAL_SRC_FILES += \
 	jdatasrc-tj.c \
 
 ifeq ($(TARGET_ARCH_ABI),armeabi)
-#NEONを有効にする時
+#When enabling NEON
 #LOCAL_ARM_NEON := true
 LOCAL_SRC_FILES += simd/jsimd_arm.c simd/jsimd_arm_neon.S
 
@@ -126,7 +126,7 @@ LOCAL_CFLAGS += \
 	-DSIZEOF_SIZE_T=4 \
 
 else ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
-#NEONを有効にする時
+#When enabling NEON
 #LOCAL_ARM_NEON := true
 LOCAL_SRC_FILES += simd/jsimd_arm.c simd/jsimd_arm_neon.S
 
@@ -134,7 +134,7 @@ LOCAL_CFLAGS += \
 	-DSIZEOF_SIZE_T=4 \
 
 else ifeq ($(TARGET_ARCH_ABI),arm64-v8a)
-#NEONを有効にする時
+#When enabling NEON
 #LOCAL_ARM_NEON := true
 LOCAL_SRC_FILES += simd/jsimd_arm64.c simd/jsimd_arm64_neon.S
 
@@ -247,7 +247,7 @@ LOCAL_CPPFLAGS += -Wno-incompatible-pointer-types
 
 LOCAL_DISABLE_FATAL_LINKER_WARNINGS := true
 
-# 静的ライブラリとしてビルド
+# Build as a static library
 include $(BUILD_STATIC_LIBRARY)
 
 ######################################################################

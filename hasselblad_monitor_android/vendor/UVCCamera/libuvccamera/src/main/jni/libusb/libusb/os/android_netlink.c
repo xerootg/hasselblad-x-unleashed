@@ -21,11 +21,11 @@
  */
 
 #define LOG_TAG "libusb/netlink"
-#if 0	// デバッグ情報を出さない時1
+#if 0	// To suppress debug output: 1
 	#ifndef LOG_NDEBUG
-		#define	LOG_NDEBUG		// LOGV/LOGD/MARKを出力しない時
+		#define	LOG_NDEBUG		// To suppress LOGV/LOGD/MARK output
 		#endif
-	#undef USE_LOGALL			// 指定したLOGxだけを出力
+	#undef USE_LOGALL			// Output only the specified LOGx
 #else
 	#define USE_LOGALL
 	#undef LOG_NDEBUG
@@ -124,7 +124,7 @@ int android_netlink_start_event_monitor(void)
 	}
 
 	if (-1 == android_netlink_socket) {
-		LOGE("failed to create android_netlink_socket:errno=%d", errno);	// 13:Permission deniedが返ってくる
+		LOGE("failed to create android_netlink_socket:errno=%d", errno);	// Returns 13:Permission denied
 		RETURN(LIBUSB_ERROR_OTHER, int);
 	}
 

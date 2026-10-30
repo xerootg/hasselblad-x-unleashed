@@ -10,9 +10,9 @@ android {
     defaultConfig {
         applicationId 'com.x2dii.uvcmonitor'
         minSdk 29
-        // UVC 库(2020年代码)的 register() 用 flags=0 的 PendingIntent + 两参 registerReceiver：
-        // 前者 Android12+ 强制可变标志、后者 Android14+ 强制导出标志，均按 targetSdk 门槛执行。
-        // 降到 30 同时绕开两条(侧载不受限)，USB host 行为与 targetSdk 无关。
+        // The UVC library's register() (2020 code) uses a PendingIntent with flags=0 + two-argument registerReceiver:
+        // Android12+ requires a mutability flag for the former, Android14+ an export flag for the latter, both gated by targetSdk.
+        // Lowering to 30 bypasses both requirements (sideloading is unrestricted); USB host behavior is independent of targetSdk.
         targetSdk 30
         versionCode 8
         versionName '2.7'
@@ -47,9 +47,9 @@ kotlin {
 
 dependencies {
     testImplementation 'junit:junit:4.13.2'
-    // UVC 引擎（libusb + libuvc，NV21 帧回调）。
-    // 传递依赖 com.serenegiant:common 无处可寻（已 exclude），所需两个工具类
-    // 已按同包名补在 app/src/main/java/com/serenegiant/utils/ 下。
+    // UVC engine (libusb + libuvc, NV21 frame callbacks).
+    // The transitive dependency com.serenegiant:common is unavailable (already excluded); the two required utility classes
+    // are provided under the same package name in app/src/main/java/com/serenegiant/utils/.
     implementation('com.github.jiangdongguo:AndroidUSBCamera:2.2.8') {
         exclude group: 'com.serenegiant', module: 'common'
         exclude group: 'com.android.support'

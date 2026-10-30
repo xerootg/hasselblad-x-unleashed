@@ -61,7 +61,7 @@ import kotlinx.coroutines.delay
 
 val HasselbladOrange = Color(0xFFFF6B00)
 
-/** aspect-fit：视频完整显示在 size 内的矩形（与 GL 信箱公式一致） */
+/** aspect-fit: rectangle displaying the entire video within size (same formula as GL letterboxing) */
 fun fittedVideoRect(aspect: Float, size: Size): Rect {
     if (!aspect.isFinite() || aspect <= 0f || size.width <= 0f || size.height <= 0f) return Rect.Zero
     val w = size.width
@@ -147,7 +147,7 @@ fun MonitorScreen(
                 modifier = Modifier.fillMaxSize()
         )
         if (connected) {
-            // 网格 + 画幅遮罩（几何与 GL 信箱对齐）
+            // Grid + aspect ratio mask (geometry aligned with GL letterboxing)
             Canvas(Modifier.fillMaxSize()) {
                 val video = fittedVideoRect(videoAspect, size)
                 if (video.width > 2f) {
@@ -203,7 +203,7 @@ fun MonitorScreen(
             )
         }
 
-        // 变焦倍率徽标
+        // Zoom level badge
         if (connected && settings.zoom > 1.01f) {
             Text(
                 String.format("%.1fx", settings.zoom),
@@ -239,8 +239,8 @@ fun MonitorScreen(
         }
 
         if (connected && settings.uiVisible) {
-            // targetSdk 35+ 强制 edge-to-edge：视频在系统栏后面全屏，
-            // 顶栏/工具栏避开状态栏与手势条
+            // targetSdk 35+ enforces edge-to-edge: video fills the screen behind system bars,
+            // while the top bar/toolbar avoid the status bar and gesture bar
             Column(
                 Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
                 verticalArrangement = Arrangement.SpaceBetween
@@ -344,10 +344,10 @@ private fun ControlBar(
         if (settings.zebraOn || settings.peakOn) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
                 if (settings.zebraOn) {
-                    SliderRow("斑马阈值", settings.zebraThreshold, 0.7f..1.0f) { settings.zebraThreshold = it }
+                    SliderRow("Zebra threshold", settings.zebraThreshold, 0.7f..1.0f) { settings.zebraThreshold = it }
                 }
                 if (settings.peakOn) {
-                    SliderRow("峰值灵敏度", settings.peakThreshold, 0.02f..0.4f) { settings.peakThreshold = it }
+                    SliderRow("Peaking sensitivity", settings.peakThreshold, 0.02f..0.4f) { settings.peakThreshold = it }
                 }
             }
         }
@@ -362,13 +362,13 @@ private fun ControlBar(
             ToolButton(Icons.Outlined.AspectRatio, settings.aspectMode.label, settings.aspectMode != AspectMode.Off) {
                 settings.aspectMode = settings.aspectMode.next()
             }
-            ToolButton(Icons.Outlined.LightMode, "斑马", settings.zebraOn) { settings.zebraOn = !settings.zebraOn }
-            ToolButton(Icons.Outlined.Palette, "假彩", settings.falseColorOn) { settings.falseColorOn = !settings.falseColorOn }
-            ToolButton(Icons.Outlined.CenterFocusStrong, "峰值", settings.peakOn) { settings.peakOn = !settings.peakOn }
-            ToolButton(Icons.Outlined.BarChart, "直方", settings.histogramOn) { settings.histogramOn = !settings.histogramOn }
-            ToolButton(Icons.Outlined.Contrast, "黑白", settings.monoOn) { settings.monoOn = !settings.monoOn }
-            ToolButton(Icons.Outlined.Pause, "冻结", settings.frozen) { settings.frozen = !settings.frozen }
-            ToolButton(Icons.Outlined.PhotoCamera, "截图", false) { onCapture() }
+            ToolButton(Icons.Outlined.LightMode, "Zebra", settings.zebraOn) { settings.zebraOn = !settings.zebraOn }
+            ToolButton(Icons.Outlined.Palette, "False color", settings.falseColorOn) { settings.falseColorOn = !settings.falseColorOn }
+            ToolButton(Icons.Outlined.CenterFocusStrong, "Peaking", settings.peakOn) { settings.peakOn = !settings.peakOn }
+            ToolButton(Icons.Outlined.BarChart, "Histogram", settings.histogramOn) { settings.histogramOn = !settings.histogramOn }
+            ToolButton(Icons.Outlined.Contrast, "Monochrome", settings.monoOn) { settings.monoOn = !settings.monoOn }
+            ToolButton(Icons.Outlined.Pause, "Freeze", settings.frozen) { settings.frozen = !settings.frozen }
+            ToolButton(Icons.Outlined.PhotoCamera, "Capture", false) { onCapture() }
         }
     }
 }

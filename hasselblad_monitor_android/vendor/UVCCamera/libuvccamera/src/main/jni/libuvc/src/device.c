@@ -46,11 +46,11 @@
 #define LOCAL_DEBUG 0
 
 #define LOG_TAG "libuvc/device"
-#if 1	// デバッグ情報を出さない時1
+#if 1	// To suppress debug output: 1
 	#ifndef LOG_NDEBUG
-		#define	LOG_NDEBUG		// LOGV/LOGD/MARKを出力しない時
+		#define	LOG_NDEBUG		// To suppress LOGV/LOGD/MARK output
 		#endif
-	#undef USE_LOGALL			// 指定したLOGxだけを出力
+	#undef USE_LOGALL			// Output only the specified LOGx
 #else
 	#define USE_LOGALL
 	#undef LOG_NDEBUG
@@ -791,7 +791,7 @@ const uvc_extension_unit_t *uvc_get_extension_units(uvc_device_handle_t *devh) {
 void uvc_ref_device(uvc_device_t *dev) {
 	UVC_ENTER();
 
-	dev->ref++;	// これ排他制御要るんちゃうかなぁ(｡･_･｡)
+	dev->ref++;	// This probably needs mutual exclusion (._.)
 //	LOGI("ref=%d", dev->ref);
 	libusb_ref_device(dev->usb_dev);
 
@@ -809,7 +809,7 @@ void uvc_unref_device(uvc_device_t *dev) {
 	UVC_ENTER();
 
 	libusb_unref_device(dev->usb_dev);
-	dev->ref--;	// これ排他制御要るんちゃうかなぁ(｡･_･｡)
+	dev->ref--;	// This probably needs mutual exclusion (._.)
 
 //	LOGI("ref=%d", dev->ref);
 	if (dev->ref == 0) {

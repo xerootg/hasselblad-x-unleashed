@@ -1,19 +1,23 @@
-/* 3fr.c — 哈苏 .3FR RAW 内嵌 JPEG preview 提取（TIFF 基结构解析）
+/* 3fr.c — Extract the embedded JPEG preview from Hasselblad .3FR RAW files (TIFF structure parsing)
  *
- * 实现要点（无真实样本，按标准 TIFF 语义，见 3fr.h 头注释）：
- *   1) 头部：字节序标记 II/MM + magic 42 + IFD0 偏移；否则 H3FR_E_NOTIFF。
- *   2) IFD 遍历：NextIFD 链 + SubIFDs(0x014A) 递归；深度 ≤4、总 IFD 数
- *      ≤64、每 IFD 条目数 ≤4096、偏移去重 —— 防损坏文件死循环/慢路径。
- *   3) 每个 IFD 收集候选 JPEG 段：
- *      a) JPEGInterchangeFormat(0x0201)+Length(0x0202)（标准 TIFF 内嵌
- *         JPEG 缩略图/preview 的挂法）；
- *      b) StripOffsets(0x0111)+StripByteCounts(0x0117) 条带组：仅当
- *         首条带以 SOI(FFD8) 开头才视为 JPEG（PhotoData 原始条带天然
- *         不满足，被跳过）。多条带按顺序拼接（等价单连续 JPEG 流）。
- *   4) 取总字节数最大且 SOI 校验通过的候选（最大 = PreviewFullEmbedded，
- *      小的为缩略图）；全部不满足 → H3FR_E_NOPREVIEW。
- *   5) 只 fseek/fread 命中区间，不整文件载入（3FR 原始文件可达数百 MB）。
- *   所有偏移/长度都做文件尺寸边界检查，越界 → H3FR_E_TRUNC。
+ * Implementation notes (no real samples are available; follows standard TIFF semantics,
+ * see the header comments in 3fr.h):
+ *   1) Header: byte-order marker II/MM + magic 42 + IFD0 offset; otherwise H3FR_E_NOTIFF.
+ *   2) Traverse IFDs: recurse through the NextIFD chain and SubIFDs (0x014A); limit depth
+ *      to 4, total IFDs to 64, entries per IFD to 4096, and deduplicate offsets to prevent
+ *      loops or slow paths on corrupt files.
+ *   3) Collect candidate JPEG segments from each IFD:
+ *      a) JPEGInterchangeFormat (0x0201) + Length (0x0202), the standard way to embed
+ *         JPEG thumbnails/previews in TIFF;
+ *      b) StripOffsets (0x0111) + StripByteCounts (0x0117): accept the strip group as JPEG
+ *         only if its first strip starts with SOI (FFD8). Raw PhotoData strips do not,
+ *         and are skipped. Concatenate multiple strips in order as one JPEG stream.
+ *   4) Select the largest candidate whose SOI check passes (the largest is
+ *      PreviewFullEmbedded; smaller ones are thumbnails); if none qualify, return
+ *      H3FR_E_NOPREVIEW.
+ *   5) Use fseek/fread only for the matching ranges instead of loading the whole file
+ *      (3FR files can be hundreds of MB). Check all offsets and lengths against file size;
+ *      out-of-range data returns H3FR_E_TRUNC.
  */
 #include "3fr.h"
 
@@ -21,7 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* 遍历安全上限（损坏文件防线） */
+/* Traversal safety limits for corrupt files */
 #define H3FR_MAX_IFDS    64
 #define H3FR_MAX_DEPTH   4
 #define H3FR_MAX_ENTRIES 4096
@@ -29,23 +33,23 @@
 const char *h3fr_strerror(int err)
 {
     switch (err) {
-    case H3FR_OK:        return "成功";
-    case H3FR_E_IO:      return "3FR 文件打开/读取失败";
-    case H3FR_E_MEM:     return "内存不足";
-    case H3FR_E_NOTIFF:  return "非 TIFF 基结构（不是 3FR 或已损坏）";
-    case H3FR_E_NOPREV:  return "3FR 内未找到可识别的 JPEG preview";
-    case H3FR_E_TRUNC:   return "3FR 条带越界/文件截断";
-    default:             return "未知错误";
+    case H3FR_OK:        return "success";
+    case H3FR_E_IO:      return "failed to open/read 3FR file";
+    case H3FR_E_MEM:     return "out of memory";
+    case H3FR_E_NOTIFF:  return "invalid TIFF structure (not 3FR or corrupt)";
+    case H3FR_E_NOPREV:  return "no recognized JPEG preview found in 3FR file";
+    case H3FR_E_TRUNC:   return "3FR strip out of range or file truncated";
+    default:             return "unknown error";
     }
 }
 
-/* ---------------- 底层读 ---------------- */
+/* ---------------- Low-level reading ---------------- */
 
 typedef struct {
     FILE *f;
     long  fsize;
     int   be;                          /* 1=big-endian(MM) */
-    long  visited[H3FR_MAX_IFDS];      /* 已访问 IFD 偏移（防环） */
+    long  visited[H3FR_MAX_IFDS];      /* Visited IFD offsets (loop prevention) */
     int   nvisited;
 } tr_t;
 
@@ -69,7 +73,7 @@ static unsigned long rd32(const unsigned char *p, int be)
               : ((unsigned long)rd16(p + 2, be) << 16) | rd16(p, be);
 }
 
-/* 候选 JPEG：若干段 (off,len) 按序拼接 */
+/* JPEG candidate: concatenate segments (off,len) in order */
 typedef struct {
     long   *off;
     size_t *len;
@@ -86,21 +90,21 @@ static void cand_free(cand_t *c)
     c->n = c->total = 0;
 }
 
-/* 若 c 比 best 大则取代 best（转移所有权；c 被清空或释放） */
+/* Replace best if c is larger (transfer ownership; clear or release c) */
 static void cand_keep_better(cand_t *c, cand_t *best)
 {
     if (c->n == 0 || c->total == 0) { cand_free(c); return; }
     if (c->total > best->total) {
         cand_free(best);
-        *best = *c;                    /* 所有权转移 */
+        *best = *c;                    /* Ownership transferred */
         memset(c, 0, sizeof(*c));
     } else {
         cand_free(c);
     }
 }
 
-/* 读 IFD 条目的值数组（BYTE/SHORT/LONG 展开为 unsigned long 数组）。
- * 成功返回 malloc 数组（长度 = 条目 count），失败 NULL。 */
+/* Read an IFD entry's value array (expand BYTE/SHORT/LONG into unsigned longs).
+ * Returns a malloc-allocated array of entry count elements, or NULL on failure. */
 static unsigned long *entry_values(tr_t *t, const unsigned char *e)
 {
     int be = t->be;
@@ -108,20 +112,20 @@ static unsigned long *entry_values(tr_t *t, const unsigned char *e)
     unsigned long cnt = rd32(e + 4, be);
     size_t tsz;
     switch (type) {
-    case 1: case 2: case 6: case 7: tsz = 1; break;   /* BYTE/ASCII/未知按字节 */
+    case 1: case 2: case 6: case 7: tsz = 1; break;   /* BYTE/ASCII/unknown, one byte each */
     case 3: case 8:                 tsz = 2; break;   /* SHORT */
     case 4: case 9: case 11:        tsz = 4; break;   /* LONG */
-    default: return NULL;                              /* RATIONAL(5) 等不用 */
+    default: return NULL;                              /* RATIONAL(5) and others are unused */
     }
     if (cnt == 0 || cnt > H3FR_MAX_ENTRIES * 4) return NULL;
     unsigned char raw[4];
     size_t bytes = tsz * (size_t)cnt;
     unsigned char *heap = NULL;
     const unsigned char *vals;
-    if (bytes <= 4) {                   /* 值内联在条目 8..11 字节 */
+    if (bytes <= 4) {                   /* Value is inline in entry bytes 8..11 */
         memcpy(raw, e + 8, 4);
         vals = raw;
-    } else {                            /* 值在条目记录的偏移处 */
+    } else {                            /* Value is at the offset recorded in the entry */
         long voff = (long)rd32(e + 8, be);
         heap = (unsigned char *)malloc(bytes);
         if (!heap) return NULL;
@@ -139,7 +143,7 @@ static unsigned long *entry_values(tr_t *t, const unsigned char *e)
     return out;
 }
 
-/* 段首 2 字节是否 JPEG SOI(FFD8) */
+/* Check whether the first two segment bytes are JPEG SOI (FFD8) */
 static int seg_is_soi(tr_t *t, long off)
 {
     unsigned char b[2];
@@ -147,14 +151,14 @@ static int seg_is_soi(tr_t *t, long off)
     return b[0] == 0xFF && b[1] == 0xD8;
 }
 
-/* 从一个 IFD 收集候选（strips / JPEGInterchangeFormat），择优并入 best。
- * 返回 0 正常，-1 结构损坏（越界/截断）。 */
+/* Collect candidates (strips / JPEGInterchangeFormat) from one IFD and select the best.
+ * Returns 0 on success or -1 for corrupt structure (out of range/truncated). */
 static int scan_ifd(tr_t *t, long ifd_off, int depth, cand_t *best)
 {
     if (depth > H3FR_MAX_DEPTH || t->nvisited >= H3FR_MAX_IFDS)
         return 0;
     for (int i = 0; i < t->nvisited; i++)
-        if (t->visited[i] == ifd_off) return 0;   /* 防环 */
+        if (t->visited[i] == ifd_off) return 0;   /* Prevent loops */
     t->visited[t->nvisited++] = ifd_off;
 
     unsigned char hdr[2];
@@ -168,7 +172,7 @@ static int scan_ifd(tr_t *t, long ifd_off, int depth, cand_t *best)
     if (tr_read(t, ifd_off, ent, bytes) != 0) { free(ent); return -1; }
     long next_ifd = (long)rd32(ent + 2 + (size_t)n * 12, t->be);
 
-    /* 抓本 IFD 的关键字段 */
+    /* Gather this IFD's key fields */
     unsigned long *soff = NULL, *scnt = NULL;
     unsigned long nsoff = 0, nscnt = 0;
     unsigned long jif_off = 0, jif_len = 0;
@@ -207,7 +211,7 @@ static int scan_ifd(tr_t *t, long ifd_off, int depth, cand_t *best)
     }
     free(ent);
 
-    /* 候选 1：JPEGInterchangeFormat 单段（标准 TIFF 内嵌 JPEG 挂法） */
+    /* Candidate 1: single JPEGInterchangeFormat segment (standard TIFF embedding) */
     if (jif_off != 0 && jif_len >= 2
         && (long)jif_off + (long)jif_len <= t->fsize
         && seg_is_soi(t, (long)jif_off)) {
@@ -226,7 +230,8 @@ static int scan_ifd(tr_t *t, long ifd_off, int depth, cand_t *best)
         }
     }
 
-    /* 候选 2：Strip 条带组 —— 首条带 SOI 才算 JPEG（PhotoData 被跳过） */
+    /* Candidate 2: Strip group — accept as JPEG only if the first strip starts with SOI
+       (PhotoData is skipped) */
     if (soff && scnt && nsoff == nscnt && nsoff > 0) {
         size_t total = 0;
         int in_bounds = 1;
@@ -259,14 +264,15 @@ static int scan_ifd(tr_t *t, long ifd_off, int depth, cand_t *best)
     free(soff);
     free(scnt);
 
-    /* 递归 SubIFD（哈苏 MetadataIFDPreview 线索：preview 挂在元数据 IFD） */
+    /* Recurse through SubIFD (Hasselblad MetadataIFDPreview indicates the preview is
+       attached to a metadata IFD) */
     if (subifds) {
         for (unsigned long i = 0; i < nsub && i < H3FR_MAX_IFDS; i++)
             scan_ifd(t, (long)subifds[i], depth + 1, best);
         free(subifds);
     }
 
-    /* NextIFD 链 */
+    /* NextIFD chain */
     if (next_ifd > 0 && next_ifd < t->fsize)
         scan_ifd(t, next_ifd, depth, best);
     return 0;
@@ -329,7 +335,7 @@ int h3fr_extract_preview(const char *path, unsigned char **out_jpeg,
     cand_free(&best);
     fclose(f);
 
-    if (pos < 4 || buf[0] != 0xFF || buf[1] != 0xD8) {  /* 双保险 */
+    if (pos < 4 || buf[0] != 0xFF || buf[1] != 0xD8) {  /* Double-check */
         free(buf);
         return H3FR_E_NOPREV;
     }

@@ -3,8 +3,8 @@ package com.serenegiant.utils;
 import android.os.Build;
 
 /**
- * 补丁类：同 HandlerThreadHandler——USBMonitor 需要 isAndroid5/isMarshmallow
- * 两个版本闸门（分别守 getSerialNumber/getVersion 的调用），按原语义补齐。
+ * Compatibility class: like HandlerThreadHandler, USBMonitor needs isAndroid5/isMarshmallow
+ * version checks (guarding getSerialNumber/getVersion calls respectively), implemented with the original semantics.
  */
 public final class BuildCheck {
 

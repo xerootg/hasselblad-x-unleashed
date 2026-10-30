@@ -5,8 +5,8 @@ import android.os.HandlerThread;
 import android.os.Process;
 
 /**
- * 补丁类：AndroidUSBCamera 的 USBMonitor 运行时依赖 common 库里的这个类，
- * 该库未发布到任何仓（exclude 掉了传递依赖），按原语义同包名补齐。
+ * Compatibility class: AndroidUSBCamera's USBMonitor depends on this class from the common library at runtime.
+ * That library is not published in any repository (the transitive dependency is excluded); this preserves its semantics and package name.
  */
 public class HandlerThreadHandler extends Handler {
 

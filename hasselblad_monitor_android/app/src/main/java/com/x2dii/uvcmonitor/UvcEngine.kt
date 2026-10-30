@@ -27,13 +27,13 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
 /**
- * UVC 引擎：USBMonitor(权限/热插拔) + UVCCamera(libuvc, YUYV/MJPEG→NV21 帧回调)
- * 帧路由 = fps 计数 → 渲染器喂帧 → 直方图采样（0.5s 一更）；冻结时停喂。
+ * UVC engine: USBMonitor(permissions/hotplug) + UVCCamera(libuvc, YUYV/MJPEG→NV21 frame callbacks)
+ * Frame routing = fps counting → renderer input → histogram sampling (updated every 0.5s); input pauses when frozen.
  */
 class UvcEngine {
 
     interface Listener {
-        fun onStatus(text: String?)                 // null = 已连接
+        fun onStatus(text: String?)                 // null = connected
         fun onConnected(name: String, format: String, videoAspect: Float)
         fun onFps(fps: Int)
         fun onHistogram(h: HistogramData)
@@ -62,7 +62,7 @@ class UvcEngine {
     private var permissionPending: String? = null
     @Volatile private var closed = false
 
-    // 帧线程私有
+    // Private to the frame thread
     private var frameCount = 0
     private var windowStart = 0L
     private var lastHistNano = 0L
@@ -83,7 +83,7 @@ class UvcEngine {
             Log.i("UVCMonitor", "frames fps=$fps size=${frameW}x${frameH}")
             main.post { listener?.onFps(fps) }
         }
-        val arr = ByteArray(bb.remaining()).also { bb.get(it) }   // buffer 复用，必须拷贝
+        val arr = ByteArray(bb.remaining()).also { bb.get(it) }   // buffer is reused, so a copy is required
         latestFrame = arr
         if (!frozen) {
             renderer?.submitFrame(arr, frameW, frameH)
@@ -123,13 +123,13 @@ class UvcEngine {
                             if (permissionPending == device.deviceName) permissionPending = null
                             if (activeDeviceName == device.deviceName) {
                                 releaseDevice()
-                                main.post { listener?.onStatus("未检测到外接设备\n\n插入后自动连接") }
+                                main.post { listener?.onStatus("No external device detected\n\nPlug in a device to connect automatically") }
                             }
                         }
                         action -> {
                             permissionPending = null
                             if (usbManager?.hasPermission(device) == true) connectDevice(device)
-                            else main.post { listener?.onStatus("USB 访问未授权，请重新插入并允许访问") }
+                            else main.post { listener?.onStatus("USB access denied; reconnect the device and allow access") }
                         }
                     }
                 }
@@ -173,7 +173,7 @@ class UvcEngine {
         } catch (e: Exception) {
             releaseDevice()
             Log.e("UVCMonitor", "USB open failed", e)
-            main.post { listener?.onStatus("USB 打开失败：${e.message}") }
+            main.post { listener?.onStatus("Failed to open USB device: ${e.message}") }
         }
     }
 
@@ -255,7 +255,7 @@ class UvcEngine {
                         releaseDevice()
                         main.post {
                             listener?.onFps(0)
-                            listener?.onStatus("视频流已中断，请重新连接相机")
+                            listener?.onStatus("Video stream interrupted; reconnect the camera")
                         }
                     } else usbHandler?.postDelayed(this, 1000)
                 }
@@ -263,7 +263,7 @@ class UvcEngine {
             usbHandler?.postDelayed(watchdog, 1000)
             main.post {
                 listener?.onConnected(
-                    ctrl.productName ?: device.productName ?: "外接设备",
+                    ctrl.productName ?: device.productName ?: "External device",
                     "$w×$h @ ${fps.toInt()} $encoding",
                     w.toFloat() / h.toFloat()
                 )
@@ -272,7 +272,7 @@ class UvcEngine {
         } catch (e: Exception) {
             Log.e("UVCMonitor", "Open failed", e)
             releaseDevice()
-            main.post { listener?.onStatus("打开失败：${e.message}") }
+            main.post { listener?.onStatus("Failed to open: ${e.message}") }
         }
     }
 
@@ -308,14 +308,14 @@ class UvcEngine {
         main.post { listener?.onFps(0) }
     }
 
-    /** 截图：当前帧 NV21 → JPEG → MediaStore 相册（API29+ 免权限） */
+    /** Capture: current NV21 frame → JPEG → MediaStore gallery (no permission required on API29+) */
     fun capture() {
         val arr = latestFrame
         val w = frameW
         val h = frameH
         val ctx = appContext
         if (arr == null || w == 0 || h == 0 || ctx == null) {
-            main.post { listener?.onToast("暂无帧可截") }
+            main.post { listener?.onToast("No frame available to capture") }
             return
         }
         Thread {
@@ -330,17 +330,17 @@ class UvcEngine {
                     put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Monitor")
                 }
                 val uri = ctx.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv)
-                    ?: throw IllegalStateException("MediaStore insert 失败")
+                    ?: throw IllegalStateException("MediaStore insert failed")
                 ctx.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
-                main.post { listener?.onToast("已保存到相册") }
+                main.post { listener?.onToast("Saved to gallery") }
             } catch (e: Exception) {
-                main.post { listener?.onToast("保存失败：${e.message}") }
+                main.post { listener?.onToast("Save failed: ${e.message}") }
             }
         }.start()
     }
 
     companion object {
-        /** NV21 CPU 抽样直方图：Y 平面 + VU 交错平面（V 在前） */
+        /** CPU-sampled NV21 histogram: Y plane + interleaved VU plane (V first) */
         fun sampleHistogram(arr: ByteArray, w: Int, h: Int): HistogramData? {
             if (w < 2 || h < 2 || arr.size < w * h * 3 / 2) return null
             val hd = HistogramData()

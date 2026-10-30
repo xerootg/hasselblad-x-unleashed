@@ -1,25 +1,27 @@
-/* state.h — 服务状态机与属性存储(纯数据层, 不含 D-Bus)
- * 属性表/取值范围与 dbus/INTERFACE.md §2(v2) 一一对应。
- * v2 通用化: paper_size/media_type 等固定枚举删除, media/print_quality/
- * color_mode 改为打印机原生 IPP 关键字字符串; 能力属性(§2b)由 select_printer
- * 探测后经 prn_caps_publish 发布, Set 校验以能力为源。
- * 修改属性必须走 prn_set_*: 命中白名单+能力校验后触发 notify 回调
- * (main.c 安装 → adaptor 发 propertiesChanged)。
+/* state.h — Service state machine and property storage (pure data layer, no D-Bus)
+ * The property table/ranges match dbus/INTERFACE.md §2 (v2).
+ * v2 generalization: removed fixed enums such as paper_size/media_type; media/print_quality/
+ * color_mode are now native printer IPP keyword strings. Capability properties (§2b) are
+ * published by prn_caps_publish after discovery in select_printer; Set validation uses
+ * those capabilities.
+ * All property modifications must go through prn_set_*: after allowlist and capability
+ * validation, the notify callback is invoked (installed in main.c → adaptor emits propertiesChanged).
  */
 #ifndef PRN_STATE_H
 #define PRN_STATE_H
 
-#include "ipp.h"                    /* ipp_caps_t(prn_caps_publish 入参, 仅类型无链接) */
+#include "ipp.h"                    /* ipp_caps_t (prn_caps_publish argument; type declaration only, no link dependency) */
 
-#define PRN_MAX_PRINTERS 16   /* discovered_printers 容量 */
-#define PRN_MAX_SCAN     32   /* scanned_networks 容量(INTERFACE.md v2.2 §3 Scan_wifi: ≤32 项) */
-#define PRN_SLEN         96   /* 字符串属性上限(含\0) */
-#define PRN_MAX_LIST     48   /* 能力列表属性容量(supported 系列与 media_size_info/扫描列表) */
-#define PRN_LIST_LEN     96   /* 能力列表元素长度上限(兼容 keyword=WxHmm 长关键字) */
+#define PRN_MAX_PRINTERS 16   /* discovered_printers capacity */
+#define PRN_MAX_SCAN     32   /* scanned_networks capacity (INTERFACE.md v2.2 §3 Scan_wifi: max 32 items) */
+#define PRN_SLEN         96   /* String property limit (including \0) */
+#define PRN_MAX_LIST     48   /* Capacity of capability-list properties (supported_* and media_size_info/scan list) */
+#define PRN_LIST_LEN     96   /* Maximum capability-list element length (supports long keyword=WxHmm values) */
 
-/* 属性索引 = GetAll 输出顺序
- * 末尾两项 synced/tx_active 是 odindb-send-printer 兼容面(INTERFACE.md §7b):
- * 来源于补丁槽位(usbhost 等长改名 printer)的固定属性, 只读+notify。 */
+/* Property index = GetAll output order.
+ * The final two properties, synced/tx_active, are for odindb-send-printer compatibility
+ * (INTERFACE.md §7b): fixed properties from the patched slot (usbhost renamed to printer
+ * with the same length), read-only + notify. */
 enum prn_prop {
     PRN_CONNECTION_STATE = 0,
     PRN_SSID,
@@ -28,27 +30,27 @@ enum prn_prop {
     PRN_PRINTER_IP,
     PRN_JOB_PROGRESS,
     PRN_JOB_STATUS,
-    PRN_COPIES,            /* i 可写: 1..copies_max(caps 未就绪=99) */
-    PRN_MEDIA,             /* s 可写: 打印机原生 media 关键字(如 na_index-4x6_4x6in) */
-    PRN_PRINT_QUALITY,     /* s 可写: draft|normal|high(RFC 8011 print-quality 关键字) */
-    PRN_COLOR_MODE,        /* s 可写: 打印机原生 print-color-mode 关键字 */
-    PRN_PRESET,            /* i 可写: 应用层预设(与打印机能力无关) */
-    PRN_DOCUMENT_FORMAT,   /* s 只读: 实际使用的 document-format(选中后 image/jpeg) */
-    PRN_CAPS_READY,        /* b 只读: 能力探测完成(Select_printer 成功即 true) */
-    PRN_COPIES_MAX,        /* i 只读: copies-supported 上限(未探测=99) */
-    PRN_SUPPORTED_MEDIA,   /* as 只读: 原生 media 关键字列表 */
-    PRN_SUPPORTED_QUALITIES,   /* as 只读: draft/normal/high 子集 */
-    PRN_SUPPORTED_COLOR_MODES, /* as 只读 */
-    PRN_SUPPORTED_FORMATS,     /* as 只读: document-format-supported */
-    PRN_MEDIA_SIZE_INFO,   /* as 只读: 每项 "keyword=WxHmm"(人机两读) */
+    PRN_COPIES,            /* i writable: 1..copies_max (99 before capabilities are ready) */
+    PRN_MEDIA,             /* s writable: native printer media keyword (e.g. na_index-4x6_4x6in) */
+    PRN_PRINT_QUALITY,     /* s writable: draft|normal|high (RFC 8011 print-quality keywords) */
+    PRN_COLOR_MODE,        /* s writable: native printer print-color-mode keyword */
+    PRN_PRESET,            /* i writable: application preset (independent of printer capabilities) */
+    PRN_DOCUMENT_FORMAT,   /* s read-only: actual document-format (image/jpeg after selection) */
+    PRN_CAPS_READY,        /* b read-only: capability probe completed (true after Select_printer succeeds) */
+    PRN_COPIES_MAX,        /* i read-only: copies-supported limit (99 before probe) */
+    PRN_SUPPORTED_MEDIA,   /* as read-only: native media keyword list */
+    PRN_SUPPORTED_QUALITIES,   /* as read-only: supported subset of draft/normal/high */
+    PRN_SUPPORTED_COLOR_MODES, /* as read-only */
+    PRN_SUPPORTED_FORMATS,     /* as read-only: document-format-supported */
+    PRN_MEDIA_SIZE_INFO,   /* as read-only: each item "keyword=WxHmm" (human and machine readable) */
     PRN_DISCOVERED_PRINTERS,
-    PRN_SCANNED_NETWORKS,  /* §20 扫描选择: as 只读 notify, 元素 "SSID\tRSSI(dBm)\tSEC" */
-    PRN_SYNCED,            /* odindb 兼容: b, 只读, 初始 true */
-    PRN_TX_ACTIVE,         /* odindb 兼容: b, 只读, 初始 false, tx() 执行期间 true */
+    PRN_SCANNED_NETWORKS,  /* §20 network scan: read-only as with notify, elements "SSID\tRSSI(dBm)\tSEC" */
+    PRN_SYNCED,            /* odindb compatibility: read-only b, initially true */
+    PRN_TX_ACTIVE,         /* odindb compatibility: read-only b, initially false; true while tx() runs */
     PRN_PROP_COUNT
 };
 
-/* 属性元信息: type 's'=字符串 'i'=i32 'b'=bool 'A'=as 数组 */
+/* Property metadata: type 's'=string, 'i'=i32, 'b'=bool, 'A'=as array */
 typedef struct prn_prop_info {
     const char *name;
     char        type;
@@ -56,15 +58,15 @@ typedef struct prn_prop_info {
     const char *desc;
 } prn_prop_info;
 
-const prn_prop_info *prn_prop_info_get(int idx); /* idx 越界返回 NULL */
-int prn_prop_index(const char *name);             /* 未知返回 -1 */
+const prn_prop_info *prn_prop_info_get(int idx); /* Returns NULL if idx is out of range */
+int prn_prop_index(const char *name);             /* Returns -1 if unknown */
 
-/* 修改通知回调(idx=变更属性) */
+/* Change-notification callback (idx=changed property) */
 typedef void (*prn_notify_fn)(int idx, void *user);
 void prn_state_set_notify(prn_notify_fn fn, void *user);
-void prn_prop_changed(int idx); /* 直接改完字段后手动通知(mock 后端内部推进用) */
+void prn_prop_changed(int idx); /* Manually notify after directly changing a field (used by mock backend) */
 
-/* 字符串列表(能力属性存储; 定长二维, 避免链式分配) */
+/* String list (stores capability properties; fixed-size 2D array avoids linked allocations) */
 typedef struct {
     char items[PRN_MAX_LIST][PRN_LIST_LEN];
     int  n;
@@ -79,54 +81,58 @@ typedef struct prn_state {
     int  job_progress;               /* 0..100 */
     char job_status[PRN_SLEN];       /* idle|preparing|sending|printing|done|failed|canceled */
     int  copies;                     /* 1..copies_max */
-    char media[PRN_SLEN];            /* 原生 media 关键字(探测后=打印机默认) */
+    char media[PRN_SLEN];            /* Native media keyword (printer default after discovery) */
     char print_quality[PRN_SLEN];    /* draft|normal|high */
-    char color_mode[PRN_SLEN];       /* 原生 print-color-mode 关键字 */
-    int  preset;                     /* 0 默认 1 证件照 2 拍立得(应用层) */
-    char document_format[PRN_SLEN];  /* 实际下发 document-format */
-    int  caps_ready;                 /* 能力探测完成 */
-    int  copies_max;                 /* 未探测=99 */
+    char color_mode[PRN_SLEN];       /* Native print-color-mode keyword */
+    int  preset;                     /* 0 default, 1 ID photo, 2 instant photo (application layer) */
+    char document_format[PRN_SLEN];  /* Actual document-format sent */
+    int  caps_ready;                 /* Capability probe complete */
+    int  copies_max;                 /* 99 before discovery */
     prn_strlist_t sup_media;         /* supported_media */
     prn_strlist_t sup_qualities;
     prn_strlist_t sup_color_modes;
     prn_strlist_t sup_formats;
     prn_strlist_t media_size_info;   /* "keyword=WxHmm" */
-    char *discovered[PRN_MAX_PRINTERS]; /* 元素 "名字\tIP" */
+    char *discovered[PRN_MAX_PRINTERS]; /* Elements "name\tIP" */
     int  discovered_n;
-    prn_strlist_t scanned;          /* §20: 最近一次 Scan_wifi 结果(≤PRN_MAX_SCAN) */
-    int  synced;                    /* odindb 兼容(§7b): 1=true */
-    int  tx_active;                 /* odindb 兼容(§7b): tx() 执行期间 1 */
+    prn_strlist_t scanned;          /* §20: most recent Scan_wifi results (≤PRN_MAX_SCAN) */
+    int  synced;                    /* odindb compatibility (§7b): 1=true */
+    int  tx_active;                 /* odindb compatibility (§7b): 1 while tx() runs */
 } prn_state;
 
-prn_state *prn_state_get(void);     /* 单例, 已初始化为默认值 */
+prn_state *prn_state_get(void);     /* Singleton, initialized to defaults */
 
-/* Set 入口(带校验+notify): 0=成功, -1=未知/不可写, -2=值非法 */
+/* Set entry point (validation + notify): 0=success, -1=unknown/read-only, -2=invalid value */
 int prn_set_string(int idx, const char *val);
 int prn_set_int(int idx, int val);
-/* Get 便捷函数 */
+/* Get convenience functions */
 const char *prn_get_string(int idx);
 int         prn_get_int(int idx);
-const prn_strlist_t *prn_get_list(int idx); /* 非 'A' 属性返回空表(NULL 不返回) */
+const prn_strlist_t *prn_get_list(int idx); /* Non-'A' property returns an empty list (never NULL) */
 
-/* ---- 能力发布(backend_real Select_printer 探测成功后调用; 逐属性 notify) ----
- * 内容: 能力列表/上限回填 + 打印机默认值归一(media/print_quality/color_mode)
- * + caps_ready=1 + document_format; copies 超限自动钳到上限。 */
+/* ---- Publish capabilities (called after successful backend_real Select_printer probe;
+ * notify each property) ----
+ * Populates capability lists/limits + normalizes printer defaults
+ * (media/print_quality/color_mode) + caps_ready=1 + document_format;
+ * clamp copies to the maximum if it exceeds the limit. */
 void prn_caps_publish(const ipp_caps_t *caps, const char *document_format);
-/* 能力失效(断开/重选失败): caps_ready=0, 清空能力列表, copies_max 回 99 */
+/* Invalidate capabilities (disconnect/reselection failure): caps_ready=0, clear capability lists,
+ * reset copies_max to 99 */
 void prn_caps_invalidate(void);
 
-/* 列表成员查询(caps_ready 校验/Set 透传用): 1=命中 */
+/* List membership check (for caps_ready validation/Set forwarding): 1=found */
 int prn_list_contains(const prn_strlist_t *l, const char *v);
 
-/* discovered_printers 数组操作(自动 notify) */
+/* discovered_printers array operations (automatic notify) */
 void prn_discovered_clear(void);
-int  prn_discovered_add(const char *name_ip); /* -1=满 */
+int  prn_discovered_add(const char *name_ip); /* -1=full */
 
-/* scanned_networks 列表操作(§20, 自动 notify; 元素 "SSID\tRSSI(dBm)\tSEC") */
+/* scanned_networks list operations (§20, automatic notify; elements "SSID\tRSSI(dBm)\tSEC") */
 void prn_scanned_clear(void);
-int  prn_scanned_add(const char *ssid_rssi_sec); /* -1=满/超长 */
+int  prn_scanned_add(const char *ssid_rssi_sec); /* -1=full/too long */
 
-/* 状态机便捷跳转(带 notify); 值不校验, 仅限服务内部使用 */
+/* State-machine convenience transitions (with notify); values are not validated,
+ * internal service use only */
 void prn_set_connection_state(const char *v);
 void prn_set_printer_state(const char *v);
 void prn_set_job_status(const char *v);
@@ -134,13 +140,14 @@ void prn_set_printer_name(const char *v);
 void prn_set_printer_ip(const char *v);
 void prn_set_job_progress(int v);
 
-/* odindb 兼容属性(§7b)便捷翻转(带 notify; 值规整为 0/1) */
+/* Convenience setters for odindb compatibility properties (§7b) (with notify; normalize
+ * values to 0/1) */
 void prn_set_synced(int v);
 void prn_set_tx_active(int v);
 
-/* 任务是否进行中(preparing/sending/printing) */
+/* Whether a job is in progress (preparing/sending/printing) */
 int prn_job_active(void);
-/* connection_state 便捷判断 */
+/* connection_state convenience checks */
 int prn_state_is(const char *connection_state);
 int prn_job_status_is(const char *job_status);
 

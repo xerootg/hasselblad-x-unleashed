@@ -27,11 +27,11 @@
 #define LOCAL_DEBUG 0
 
 #define LOG_TAG "libusb/core"
-#if 1	// デバッグ情報を出さない時1
+#if 1	// To suppress debug output: 1
 	#ifndef LOG_NDEBUG
-		#define	LOG_NDEBUG		// LOGV/LOGD/MARKを出力しない時
+		#define	LOG_NDEBUG		// To suppress LOGV/LOGD/MARK output
 		#endif
-	#undef USE_LOGALL			// 指定したLOGxだけを出力
+	#undef USE_LOGALL			// Output only the specified LOGx
 #else
 	#define USE_LOGALL
 	#undef LOG_NDEBUG
@@ -1252,7 +1252,7 @@ libusb_device * LIBUSB_CALL libusb_get_device_with_fd(libusb_context *ctx,
 	ENTER();
 
 	struct libusb_device *device = NULL;
-	// android_generate_device内でusbi_alloc_deviceが呼ばれた時に参照カウンタは1
+	// The reference count is 1 when usbi_alloc_device is called within android_generate_device
 	int ret = android_generate_device(ctx, &device, vid, pid, serial, fd, busnum, devaddr);
 	if (ret) {
 		LOGD("android_generate_device failed:err=%d", ret);
@@ -1621,8 +1621,8 @@ int API_EXPORTED libusb_claim_interface(libusb_device_handle *dev,
 	if (!(dev->claimed_interfaces & (1 << interface_number))) {
 		r = usbi_backend->claim_interface(dev, interface_number);
 		if (r == LIBUSB_ERROR_BUSY) {
-			// EBUSYが返ってきた時はたぶんカーネルドライバーがアタッチされているから
-			// デタッチ要求してから再度claimしてみる
+			// EBUSY probably means a kernel driver is attached,
+			// so request detachment and try to claim again
 			LOGV("request detach kernel driver and retry claim interface");
 			r = usbi_backend->release_interface(dev, interface_number);
 			libusb_detach_kernel_driver(dev, interface_number);

@@ -1,10 +1,13 @@
-/* mock_backend.c — 假后端: 模拟连热点耗时/发现列表/打印进度(2%/秒)
- * 供 WSL 与 GUI 联调; 时间线(INTERFACE.md §4):
- *   joining 3s → joined | 发现在 Start_discovery 内阻塞 2s
+/* mock_backend.c — Mock backend: simulates hotspot connection delay/discovery list/print
+ * progress (2%/sec).
+ * Used for WSL and GUI integration; timeline (INTERFACE.md §4):
+ *   joining 3s → joined | discovery takes 2s synchronously inside Start_discovery
  *   preparing 2s → sending(0→40, 2%/s) → printing(40→100, 2%/s) → done 2s → idle
- * 彩蛋(便于测错误路径): psk 1..7 位 → 同步 failed(空串=开放网络§20); ssid 含 "fail" → 异步失败回 disconnected
- * §18 预览/裁切三方法: mock 无图像管线(libjpeg 不链接), 明确回 failed;
- *   需要真实图像行为用 --real 后端(wifi_backend=mock 即可, 打印侧走 mock_ipp)。
+ * Easter eggs for testing error paths: PSK 1–7 chars → synchronous failed (empty string =
+ * open network, §20); SSID containing "fail" → async failure back to disconnected.
+ * §18 preview/crop methods: mock has no image pipeline (libjpeg is not linked), so returns
+ * failed explicitly; use --real backend for real image behavior (wifi_backend=mock is fine;
+ * print path uses mock_ipp).
  */
 #include "backend.h"
 #include "state.h"
@@ -24,22 +27,23 @@ static long long now_ms(void)
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* ---- 连接模拟 ---- */
-static int  g_joining;            /* 1=joining 进行中 */
-static int  g_join_fail;          /* 异步失败演示 */
+/* ---- Connection simulation ---- */
+static int  g_joining;            /* 1=join in progress */
+static int  g_join_fail;          /* Demonstrate async failure */
 static long long g_join_t0;
 
-/* ---- 打印任务模拟 ---- */
+/* ---- Print-job simulation ---- */
 enum { MJ_NONE = 0, MJ_PREPARING, MJ_SENDING, MJ_PRINTING, MJ_DONE, MJ_CANCELED };
 static int      g_mj = MJ_NONE;
 static long long g_mj_t0;
 static int      g_jobno;
 
-/* ---- 发现模拟(v2.2 语义: 受理即返, tick 2s 后发布 —— 与真后端同节奏) ---- */
+/* ---- Discovery simulation (v2.2 semantics: return on acceptance, publish after 2s in
+ * tick — same timing as real backend) ---- */
 static int      g_disc_run;
 static long long g_disc_t0;
 
-/* 字符串数组工具(元素 malloc, 由调用方逐个 free) */
+/* String-array helpers (malloc each element; caller frees each one) */
 static char **arr_new(int n) { return calloc((size_t)n + 1, sizeof(char *)); }
 static void arr_put(char ***out, int *n, char **items, int cnt)
 {
@@ -49,7 +53,7 @@ static void arr_put(char ***out, int *n, char **items, int cnt)
 static int mb_connect_to_ap(const char *ssid, const char *psk)
 {
     if (!ssid || !*ssid) return PRN_BE_PARAM;
-    /* §20: psk 空串=开放网络(免密); 1..7 位=半截密码同步失败 */
+    /* §20: empty PSK = open network (no password); 1–7 chars = incomplete password, fail synchronously */
     if (!psk || (psk[0] && strlen(psk) < 8)) {
         LOGW("mock: psk invalid (%zu, empty=open)", psk ? strlen(psk) : 0);
         return PRN_BE_FAILED;
@@ -59,27 +63,28 @@ static int mb_connect_to_ap(const char *ssid, const char *psk)
     g_joining = 1;
     g_join_fail = (strstr(ssid, "fail") != NULL);
     g_join_t0 = now_ms();
-    prn_set_string(PRN_SSID, ssid);          /* 顺手记住目标 ssid */
-    prn_set_connection_state("joining");     /* 异步 3s 后 → joined/disconnected(tick) */
+    prn_set_string(PRN_SSID, ssid);          /* Also remember target ssid */
+    prn_set_connection_state("joining");     /* Async transition after 3s → joined/disconnected (tick) */
     LOGI("mock: joining '%s' (3s)", ssid);
     return 0;
 }
 
-/* §20 扫描选择: 模拟 2.5s 扫描, 4 个假网络(含打印机热点样式 hannto-* 与一个 open),
- * 最强(-50)置顶; busy 语义=非 disconnected 态(joining/joined/ready/discovering)全回 busy */
+/* §20 Scan selection: simulate a 2.5s scan, return 4 fake networks (including a printer-style
+ * hannto-* hotspot and one open network), strongest (-50) first; busy in every state other
+ * than disconnected (joining/joined/ready/discovering). */
 static int mb_scan_wifi(char ***out, int *n)
 {
     if (!prn_state_is("disconnected")) {
         LOGW("mock: scan_wifi in state %s → busy", prn_state_get()->connection_state);
         return PRN_BE_BUSY;
     }
-    /* 阻塞模拟扫描(真后端=iw/wpa_cli 扫描窗口) */
+    /* Simulate a blocking scan (real backend uses iw/wpa_cli scan window) */
     for (int i = 0; i < 25; i++) usleep(100 * 1000);
 
     static const char *const nets[] = {
-        "hannto-printer-honey1s_mibt4D0F\t-50\twpa2",  /* 打印机热点(-50 最强置顶) */
+        "hannto-printer-honey1s_mibt4D0F\t-50\twpa2",  /* Printer hotspot (strongest, listed first) */
         "guguji-IOT\t-58\twpa2",
-        "Coffee-Guest\t-72\topen",                       /* 开放网络: 免密码直连 */
+        "Coffee-Guest\t-72\topen",                       /* Open network: connect without password */
         "HomeNet_5G\t-80\twpa2",
     };
     prn_scanned_clear();
@@ -97,7 +102,7 @@ static int mb_scan_wifi(char ***out, int *n)
 static int mb_disconnect_restore(void)
 {
     g_joining = 0;
-    if (prn_job_active()) {                  /* 拆链=强取消 */
+    if (prn_job_active()) {                  /* Disconnect = force cancel */
         g_mj = MJ_NONE;
         prn_set_job_status("canceled");
         prn_set_job_progress(0);
@@ -119,11 +124,11 @@ static int mb_start_discovery(char ***out, int *n)
     if (!prn_state_is("joined"))   return PRN_BE_FAILED;
 
     prn_set_connection_state("discovering");
-    /* v2.2 语义(与真后端一致): 受理即返空 as, 模拟扫描 2s 在 tick 内完成,
-     * 结果经 discovered_printers notify 发布 */
+    /* v2.2 semantics (match real backend): return empty as on acceptance, simulate 2s scan
+     * in tick, publish results through discovered_printers notify */
     g_disc_run = 1;
     g_disc_t0 = now_ms();
-    LOGI("mock: discovery 受理(2s 后经 discovered_printers notify 发布)");
+    LOGI("mock: discovery accepted (publishing through discovered_printers notify after 2s)");
     return 0;
 }
 
@@ -131,13 +136,13 @@ static int mb_select_printer(const char *name)
 {
     prn_state *st = prn_state_get();
     if (st->discovered_n == 0) { LOGW("mock: select before discovery"); return PRN_BE_FAILED; }
-    /* 先匹配列表(未命中=parametererror), 状态门在后(重选允许) */
+    /* Match list first (no match=parametererror), then check state gate (reselection allowed) */
     for (int i = 0; i < st->discovered_n; i++) {
         const char *el = st->discovered[i];
         const char *tab = strchr(el, '\t');
         size_t nlen = tab ? (size_t)(tab - el) : strlen(el);
-        int full = !strcmp(el, name);                       /* 整串匹配 */
-        int part = (tab && strlen(name) == nlen && !strncmp(el, name, nlen)); /* 纯名字 */
+        int full = !strcmp(el, name);                       /* Full-string match */
+        int part = (tab && strlen(name) == nlen && !strncmp(el, name, nlen)); /* Name only */
         if (full || part) {
             if (!prn_state_is("joined") && !prn_state_is("ready")) {
                 LOGW("mock: select in state %s", st->connection_state);
@@ -189,7 +194,7 @@ static int mb_photo_list(const char *path, char ***out, int *n)
 static int mb_start_print_job(char **paths, int npaths, const prn_job_opts_t *opts,
                               char **out_job_id)
 {
-    (void)paths; (void)opts;                          /* mock 不做能力校验/图像处理 */
+    (void)paths; (void)opts;                          /* Mock skips capability validation/image processing */
     *out_job_id = NULL;
     if (!prn_state_is("ready")) { LOGW("mock: print in state %s", prn_state_get()->connection_state); return PRN_BE_FAILED; }
     if (prn_job_active()) return PRN_BE_BUSY;
@@ -205,28 +210,29 @@ static int mb_start_print_job(char **paths, int npaths, const prn_job_opts_t *op
     return 0;
 }
 
-/* 后端失败详情: mock 永不填(backend.h 声明带 weak → 本定义为弱符号,
- * 与 backend_real 同链时强定义覆盖, 仅链接 mock 时生效) */
+/* Backend error detail: mock never fills it (backend.h declaration is weak, so this is a
+ * weak definition; strong definition in backend_real overrides it when linked; effective
+ * only when linking mock alone). */
 const char *prn_be_last_error(void) { return ""; }
 
-/* §18 三方法: mock 无图像管线, 回 failed(真行为用 --real 后端) */
+/* §18 three methods: mock has no image pipeline and returns failed (use --real backend) */
 static int mb_photo_info(const char *path, prn_photo_info_t *out)
 {
     (void)path; (void)out;
-    LOGW("mock: photo_info 无图像管线(用 --real 后端)");
+    LOGW("mock: photo_info has no image pipeline (use --real backend)");
     return PRN_BE_FAILED;
 }
 static int mb_photo_preview(const char *path, int max_w, int max_h, char **out_path)
 {
     (void)path; (void)max_w; (void)max_h; (void)out_path;
-    LOGW("mock: photo_preview 无图像管线(用 --real 后端)");
+    LOGW("mock: photo_preview has no image pipeline (use --real backend)");
     return PRN_BE_FAILED;
 }
 static int mb_preview_print(const char *path, const prn_job_opts_t *opts,
                             char **out_path)
 {
     (void)path; (void)opts; (void)out_path;
-    LOGW("mock: preview_print 无图像管线(用 --real 后端)");
+    LOGW("mock: preview_print has no image pipeline (use --real backend)");
     return PRN_BE_FAILED;
 }
 
@@ -242,20 +248,21 @@ static int mb_cancel_job(void)
 
 static void mb_tick(void)
 {
-    /* 发现状态机推进(v2.2 受理即返: 2s 后发布 discovered_printers + 回 joined) */
+    /* Advance discovery state machine (v2.2 returns on acceptance: publish discovered_printers
+     * and return to joined after 2s) */
     if (g_disc_run) {
         if (now_ms() - g_disc_t0 >= 2000) {
             g_disc_run = 0;
-            prn_discovered_clear();               /* 模拟两台(元素 "名字\tIP") */
+            prn_discovered_clear();               /* Simulate two printers (entries "name\tIP") */
             prn_discovered_add("Mi Photo Printer 1S [A1B2]\t192.168.43.1");
             prn_discovered_add("DIRECT-8B-Mi-Photo-Printer1S\t192.168.49.1");
             prn_set_connection_state("joined");
             LOGI("mock: discovery done, %d found", prn_state_get()->discovered_n);
         }
-        return;                                    /* 发现期间不推进任务 */
+        return;                                    /* Do not advance jobs during discovery */
     }
 
-    /* 连接状态机推进 */
+    /* Advance connection state machine */
     if (g_joining) {
         if (now_ms() - g_join_t0 >= 3000) {
             g_joining = 0;
@@ -267,10 +274,10 @@ static void mb_tick(void)
                 LOGI("mock: joined");
             }
         }
-        return;                                /* 连接期间不推进任务 */
+        return;                                /* Do not advance jobs while connecting */
     }
 
-    /* 打印任务状态机推进(2%/秒) */
+    /* Advance print-job state machine (2%/sec) */
     prn_state *st = prn_state_get();
     long long dt = now_ms() - g_mj_t0;
     switch (g_mj) {
@@ -301,7 +308,7 @@ static const prn_backend g_mb = {
     .name = "mock",
     .tick = mb_tick,
     .connect_to_ap = mb_connect_to_ap,
-    .scan_wifi = mb_scan_wifi,                        /* §20 扫描选择 */
+    .scan_wifi = mb_scan_wifi,                        /* §20 network scan/selection */
     .disconnect_restore = mb_disconnect_restore,
     .start_discovery = mb_start_discovery,
     .select_printer = mb_select_printer,

@@ -9,18 +9,18 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /**
- * OpenGL ES 2 渲染器：NV21 双平面 → RGB，单 pass 完成 数字变焦/平移、
- * 峰值对焦、黑白、斑马纹、假彩色（与 iOS Shaders.metal 同一套数学）。
- * NV21 = Y 平面 + VU 交错平面（V 在前，与 NV12 相反）。
+ * OpenGL ES 2 renderer: NV21 dual planes → RGB, with digital zoom/pan,
+ * focus peaking, monochrome, zebra stripes, and false color in a single pass (same math as iOS Shaders.metal).
+ * NV21 = Y plane + interleaved VU plane (V first, unlike NV12).
  */
 class MonitorGlRenderer : GLSurfaceView.Renderer {
 
-    // UVC 回调线程写、GL 线程读
+    // Written by the UVC callback thread, read by the GL thread
     private val frames = FrameMailbox()
     private var displayedFrame: Nv21Frame? = null // GL thread only
     private var displayedGeneration = 0L
 
-    // UI 线程写的渲染参数
+    // Rendering parameters written by the UI thread
     @Volatile var zoom = 1f
     @Volatile var panX = 0f
     @Volatile var panY = 0f
@@ -59,7 +59,7 @@ class MonitorGlRenderer : GLSurfaceView.Renderer {
     }
     fun clearFrame() { frames.clear() }
 
-    /** UI 重组时同步设置（在 AndroidView.update 里调用） */
+    /** Synchronize settings on UI recomposition (called in AndroidView.update) */
     fun apply(s: MonitorSettings) {
         zoom = s.zoom.coerceIn(1f, 8f)
         val half = (1f - 1f / zoom) / 2f
@@ -126,7 +126,7 @@ class MonitorGlRenderer : GLSurfaceView.Renderer {
 
         GLES20.glUseProgram(program)
 
-        // aspect-fit 信箱（顶点空间），overlay 的 Canvas 用同一公式
+        // aspect-fit letterboxing (vertex space); the overlay Canvas uses the same formula
         val videoA = w.toFloat() / h.toFloat()
         val dA = surfaceW.toFloat() / surfaceH.coerceAtLeast(1).toFloat()
         var sx = 1f; var sy = 1f
@@ -252,7 +252,7 @@ class MonitorGlRenderer : GLSurfaceView.Renderer {
                 vec3 rgb = yuvToRgb(y, vu.r, vu.g);
                 float l = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
 
-                /* 峰值对焦：亮度 3x3 Sobel 染红 */
+                /* Focus peaking: red highlights from a 3x3 luminance Sobel filter */
                 if (uPeak > 0.0) {
                     float tl = texture2D(yTex, uv + vec2(-uTexel.x, -uTexel.y)).r;
                     float tc = texture2D(yTex, uv + vec2(0.0, -uTexel.y)).r;
@@ -270,14 +270,14 @@ class MonitorGlRenderer : GLSurfaceView.Renderer {
 
                 if (uMono > 0.5) rgb = vec3(l);
 
-                /* 斑马纹 */
+                /* Zebra stripes */
                 if (uZebra > 0.0) {
                     float over = step(uZebra, l);
                     float stripe = step(0.5, fract((gl_FragCoord.x + gl_FragCoord.y) * 0.06));
                     rgb = mix(rgb, vec3(1.0, 0.1, 0.1), over * stripe * 0.85);
                 }
 
-                /* 假彩色 9 段 */
+                /* 9-band false color */
                 if (uFalse > 0.5) {
                     vec3 c;
                     if      (l < 0.04) c = vec3(0.00, 0.00, 0.00);

@@ -2,7 +2,7 @@
 
 
 
-DJI Mic 2 → 哈苏 X2D II：扫描/配对、主动连接/断开、重连、状态与设置、LC3plus 解码、PCM FIFO、WAV 录音，以及供视频使用的租约和归属录音接口。
+DJI Mic 2 → Hasselblad X2D II: scanning/pairing, active connection/disconnection, reconnection, status and settings, LC3plus decoding, PCM FIFO, WAV recording, and lease and recording-ownership interfaces for video use.
 
 
 

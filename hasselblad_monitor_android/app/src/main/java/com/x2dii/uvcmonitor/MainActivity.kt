@@ -22,7 +22,7 @@ class MainActivity : ComponentActivity(), UvcEngine.Listener {
     private val engine = UvcEngine()
 
     private var connected by mutableStateOf(false)
-    private var statusText by mutableStateOf("正在检测设备…")
+    private var statusText by mutableStateOf("Detecting devices…")
     private var deviceName by mutableStateOf("")
     private var formatDesc by mutableStateOf("")
     private var fps by mutableIntStateOf(0)
@@ -32,7 +32,7 @@ class MainActivity : ComponentActivity(), UvcEngine.Listener {
     private var toastSeq = 0
     private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startMonitor()
-        else statusText = "需要相机权限才能访问外接设备\n\n请在应用设置中允许相机权限后重新打开"
+        else statusText = "Camera permission is required to access external devices\n\nAllow camera access in app settings, then reopen the app"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -70,10 +70,10 @@ class MainActivity : ComponentActivity(), UvcEngine.Listener {
     private fun startMonitor() {
         try {
             engine.init(this)
-            statusText = "未检测到外接设备\n\n插入后自动连接"
+            statusText = "No external device detected\n\nPlug in a device to connect automatically"
         } catch (e: Exception) {
             connected = false
-            statusText = "USB 初始化失败：${e.message}"
+            statusText = "USB initialization failed: ${e.message}"
         }
     }
 
@@ -82,7 +82,7 @@ class MainActivity : ComponentActivity(), UvcEngine.Listener {
         super.onDestroy()
     }
 
-    // ---- UvcEngine.Listener（主线程回调）----
+    // ---- UvcEngine.Listener (main-thread callbacks) ----
 
     override fun onStatus(text: String?) {
         if (text == null) {

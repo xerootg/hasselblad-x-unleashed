@@ -1,8 +1,10 @@
-/* heif_thumb.c — HEIC/HEIF → JPEG 提取子进程(x2print §26, 上游 libheif 版)
- * 上游 API, 无系统库 ABI 依赖: read → 缩略图(无则主图) → heif_decode_image(RGB)
- * → 静态 libjpeg q92 编码 → stdout。链: libheif.a(内置 de265 HEVC 解码) + libde265.a
- * + libjpeg.a。内存: 缩略图 3888×2918 RGB ≈ 34MB(远低于 217MB 上限); 主图 HEVC
- * 软解有 60s alarm 预算, 服务端 child_run 预算+SIGKILL 兜底。 */
+/* heif_thumb.c — HEIC/HEIF → JPEG extraction subprocess (x2print §26, upstream libheif)
+ * Uses the upstream API with no system-library ABI dependency: read → thumbnail (or main
+ * image if unavailable) → heif_decode_image(RGB) → static libjpeg q92 encode → stdout.
+ * Link: libheif.a (with built-in de265 HEVC decoder) + libde265.a + libjpeg.a.
+ * Memory: thumbnail 3888×2918 RGB ≈ 34MB (well below the 217MB limit); main-image HEVC
+ * software decoding has a 60s alarm budget, with the service child_run budget and SIGKILL
+ * as a fallback. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,7 +26,8 @@ int main(int argc, char **argv)
     e = heif_context_get_primary_image_handle(ctx, &h);
     if (e.code) { fprintf(stderr, "primary: %s\n", e.message); return 4; }
 
-    /* 优先内嵌缩略图(同 3FR preview 源, 打印质量足够且秒级); 无则主图(HEVC 软解) */
+    /* Prefer the embedded thumbnail (like the 3FR preview source; print quality is
+       sufficient and extraction takes seconds); otherwise use the main image (HEVC software decode). */
     heif_item_id tids[4];
     int nt = heif_image_handle_get_number_of_thumbnails(h);
     if (nt > 0) {

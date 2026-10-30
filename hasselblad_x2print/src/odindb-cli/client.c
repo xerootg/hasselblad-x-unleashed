@@ -1,9 +1,4 @@
-/* client.c — libdbus 客户端封装实现
- * 报文级对齐原版 QtDBus 可见序列(qemu+dbus-monitor 实测, 见 conformance 文档):
- *   AddMatch propertiesChanged → AddMatch NameOwnerChanged → GetNameOwner
- *   → AddMatch NameOwnerChanged(重复, QtDBus 怪癖) → NameHasOwner
- *   → GetAll(com.hasselblad.<mod>) → GetAll(com.hasselblad.linkstatus)
- */
+/* Implementation details. */
 #include "client.h"
 
 #include <stdio.h>
@@ -19,10 +14,10 @@ int odin_error_exitcode(const char *name)
     if (!strcmp(name, "com.hasselblad.error.busy"))           return 3;
     if (!strcmp(name, "com.hasselblad.error.canceled"))       return 4;
     if (!strcmp(name, "com.hasselblad.error.timeout"))        return 255;
-    return 1;                         /* 其余 dbus 错误统一非 0 */
+    return 1;                         /* Implementation details. */
 }
 
-/* ---------------- 模型查找 ---------------- */
+/* Implementation details. */
 static int name_eq_ci(const char *a, const char *b)
 {
     return strcasecmp(a, b) == 0;
@@ -32,7 +27,7 @@ const odin_method *odin_iface_find_method(const odin_iface *ifc, const char *nam
 {
     for (int i = 0; i < ifc->n_methods; i++)
         if (!strcmp(ifc->methods[i].name, name)) return &ifc->methods[i];
-    /* member 去 do 前缀(odindb C 层 doXxx → wire Xxx) + 大小写不敏感兜底 */
+    /* Implementation details. */
     if (name[0] == 'd' && name[1] == 'o')
         for (int i = 0; i < ifc->n_methods; i++)
             if (!strcmp(ifc->methods[i].name, name + 2)) return &ifc->methods[i];
@@ -59,7 +54,7 @@ const odin_signal *odin_iface_find_signal(const odin_iface *ifc, const char *nam
     return NULL;
 }
 
-/* ---------------- 总线连接 ---------------- */
+/* Implementation details. */
 static DBusConnection *bus_connect(const char *bus, DBusError *e)
 {
     dbus_error_init(e);
@@ -67,10 +62,9 @@ static DBusConnection *bus_connect(const char *bus, DBusError *e)
     if (bus && !strcmp(bus, "session"))
         return dbus_bus_get(DBUS_BUS_SESSION, e);
     if (bus && !strcmp(bus, "none"))
-        return NULL;                  /* 不连: 仅本地操作(--list-enums 等) */
+        return NULL;                  /* Implementation details. */
 
-    /* system(默认): libdbus 默认路径(含 DBUS_SYSTEM_BUS_ADDRESS),
-     * 失败再依次试 HBL 自定义 DBUS_SOCKET 与相机 /dev/socket/dbus */
+    /* Implementation details. */
     DBusConnection *c = dbus_bus_get(DBUS_BUS_SYSTEM, e);
     if (c) return c;
     const char *cand = getenv("DBUS_SOCKET");
@@ -96,7 +90,7 @@ int odin_client_init(odin_client *oc, const char *module, const char *bus, DBusE
 {
     memset(oc, 0, sizeof *oc);
     const char *m = module;
-    if (!strncmp(m, "com.hasselblad.", 15)) m += 15;   /* 容忍全名输入 */
+    if (!strncmp(m, "com.hasselblad.", 15)) m += 15;   /* Implementation details. */
     snprintf(oc->module, sizeof oc->module, "%s", m);
     snprintf(oc->dest, sizeof oc->dest, "com.hasselblad.%s", m);
     snprintf(oc->path, sizeof oc->path, "/%s", m);
@@ -115,12 +109,12 @@ void odin_client_free(odin_client *oc)
     }
 }
 
-/* ---------------- 通用调用 ---------------- */
+/* Implementation details. */
 DBusMessage *odin_call(odin_client *oc, const char *dest, const char *path,
                        const char *iface, const char *member, int timeout_ms,
                        DBusError *e, DBusMessage *req)
 {
-    (void)dest; (void)path; (void)iface; (void)member; /* 身份已封进 req */
+    (void)dest; (void)path; (void)iface; (void)member; /* Implementation details. */
     if (!req) return NULL;
     DBusMessage *rep = dbus_connection_send_with_reply_and_block(
         oc->conn, req, timeout_ms > 0 ? timeout_ms : ODIN_DEFAULT_TIMEOUT_MS, e);
@@ -137,8 +131,7 @@ DBusMessage *odin_getall(odin_client *oc, const char *iface, DBusError *e)
     return odin_call(oc, oc->dest, oc->path, ODIN_IFACE_PROPERTIES, "GetAll", 0, e, m);
 }
 
-/* 单属性 Get(ss)→v: 原版生成代码从不调用(实测零 xref), 此处仅在
- * GetAll 不可用时兜底探测 —— 与报告 Q2 结论一致 */
+/* Implementation details. */
 DBusMessage *odin_get(odin_client *oc, const char *prop, DBusError *e)
 {
     DBusMessage *m = dbus_message_new_method_call(
@@ -149,7 +142,7 @@ DBusMessage *odin_get(odin_client *oc, const char *prop, DBusError *e)
     return odin_call(oc, oc->dest, oc->path, ODIN_IFACE_PROPERTIES, "Get", 0, e, m);
 }
 
-/* ---------------- Set 构造器: ssv, 值封 variant ---------------- */
+/* Implementation details. */
 int odin_set_begin(odin_client *oc, const char *prop, const char *value_sig,
                    odin_set_builder *b)
 {
@@ -186,7 +179,7 @@ DBusMessage *odin_introspect(odin_client *oc, DBusError *e)
     return odin_call(oc, oc->dest, oc->path, ODIN_IFACE_INTROSPECT, "Introspect", 0, e, m);
 }
 
-/* ---------------- 总线查询 / match rule ---------------- */
+/* Implementation details. */
 int odin_name_has_owner(odin_client *oc, const char *name)
 {
     DBusError e;
@@ -214,7 +207,7 @@ int odin_add_match(odin_client *oc, const char *rule)
 {
     DBusError e;
     dbus_error_init(&e);
-    dbus_bus_add_match(oc->conn, rule, &e);   /* 失败静默: 与原版启动序列容错一致 */
+    dbus_bus_add_match(oc->conn, rule, &e);   /* Implementation details. */
     dbus_error_free(&e);
     return 0;
 }
@@ -228,7 +221,7 @@ int odin_remove_match(odin_client *oc, const char *rule)
     return 0;
 }
 
-/* ---------------- 启动序列 ---------------- */
+/* Implementation details. */
 static void add_match_props_changed(odin_client *oc)
 {
     char rule[512];
@@ -253,10 +246,10 @@ int odin_client_start(odin_client *oc, DBusMessage **getall_reply, DBusError *e)
     if (!oc->conn) return -2;
     if (getall_reply) *getall_reply = NULL;
 
-    add_match_props_changed(oc);      /* DBusProxy 基类订阅 */
-    add_match_owner_changed(oc);      /* QDBusServiceWatcher 等效 */
+    add_match_props_changed(oc);      /* Implementation details. */
+    add_match_owner_changed(oc);      /* Implementation details. */
 
-    /* GetNameOwner: QtDBus 连接服务时的探询, 结果忽略(下一个调用兜底) */
+    /* Implementation details. */
     DBusError ig;
     dbus_error_init(&ig);
     DBusMessage *m = dbus_message_new_method_call(
@@ -268,23 +261,23 @@ int odin_client_start(odin_client *oc, DBusMessage **getall_reply, DBusError *e)
     if (rep) dbus_message_unref(rep);
     dbus_error_free(&ig);
 
-    add_match_owner_changed(oc);      /* 重复 AddMatch: QtDBus 实测怪癖, 报文级对齐 */
+    add_match_owner_changed(oc);      /* Implementation details. */
 
     if (!odin_name_has_owner(oc, oc->dest))
-        return -1;                    /* 名字不在总线上 → 上层按 No such service 处理 */
+        return -1;                    /* Implementation details. */
 
-    /* 本模块属性缓存填充 */
+    /* Implementation details. */
     rep = odin_getall(oc, oc->dest, e);
     if (!rep) return -2;
     if (dbus_message_get_type(rep) == DBUS_MESSAGE_TYPE_ERROR) {
         if (getall_reply) *getall_reply = rep;
         else dbus_message_unref(rep);
-        return -2;                    /* 总线层错误(非"名字不存在"路径) */
+        return -2;                    /* Implementation details. */
     }
     if (getall_reply) *getall_reply = rep;
     else dbus_message_unref(rep);
 
-    /* LinkstatusProxy 基类照例拉取(内容忽略, 仅报文对齐) */
+    /* Implementation details. */
     rep = odin_getall(oc, ODIN_IFACE_LINKSTATUS, &ig);
     if (rep) dbus_message_unref(rep);
     dbus_error_free(&ig);
@@ -320,8 +313,8 @@ int odin_list_modules(odin_client *oc, char ***names, DBusError *e)
     return cnt;
 }
 
-/* ---------------- 自省 XML 解析(轻量字符串扫描) ---------------- */
-/* 从 tag 文本中取 key="value"; 成功返回 value 起点并写结束引号位置 */
+/* Implementation details. */
+/* Implementation details. */
 static const char *attr_value(const char *tag, const char *key, const char **end)
 {
     size_t kl = strlen(key);
@@ -349,7 +342,7 @@ static int copy_attr(char *dst, size_t dstsz, const char *tag, const char *key)
     return 0;
 }
 
-/* 处理 <arg .../>: 按方向归入 in/out */
+/* Implementation details. */
 static void parse_arg_tags(const char *block, odin_arg *in, int *n_in,
                            odin_arg *out, int *n_out)
 {
@@ -389,7 +382,7 @@ int odin_introspect_parse(odin_client *oc, odin_iface *ifc, DBusError *e)
         !dbus_message_get_args(rep, e, DBUS_TYPE_STRING, &xml, DBUS_TYPE_INVALID))
         goto out;
 
-    /* 逐 <interface name="X"> 块扫描, 只保留本模块接口 */
+    /* Implementation details. */
     const char *p = xml;
     while ((p = strstr(p, "<interface")) != NULL) {
         const char *tagend = strchr(p, '>');
@@ -476,7 +469,7 @@ int odin_introspect_parse(odin_client *oc, odin_iface *ifc, DBusError *e)
             }
             free(block);
             rc = 0;
-            break;                    /* 本模块接口处理完 */
+            break;                    /* Implementation details. */
         }
         p = tagend + 1;
     }

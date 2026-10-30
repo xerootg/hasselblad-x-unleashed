@@ -1,18 +1,4 @@
-/* adaptor.c — odindb 线协议 adaptor(逐条对照 REPORT_odindb_conventions.md 速查表)
- * 关键字节级约定:
- *  - destination=interface=com.hasselblad.printer, path=/printer
- *  - 属性走 org.freedesktop.DBus.Properties Get/GetAll/Set(interface 实参=本服务名)
- *  - 变更信号 member=propertiesChanged(首字母小写!), sa{sv}as 且 as 恒空
- *  - 方法 member=odindb 名去 do 前缀(Connect_to_ap 等), 枚举封 i32
- *  - 错误名 com.hasselblad.error.{failed|parametererror|busy|canceled|timeout}
- *  - Introspect 返回手工 XML
- * 另含 odindb-send-printer 兼容面(INTERFACE.md §7b, 来源于补丁槽位 usbhost):
- *  - 方法 tx(y message_len, ay message), 信号 rx/testrx(y, ay)
- *  - 属性 synced(b)/tx_active(b)
- * §18 预览/裁切/旋转三方法(v2.1): Get_photo_preview(s,i,i)→s /
- *  Get_photo_info(s)→a{sv} / Preview_print(s,a{sv})→s; Start_print_job opts
- *  扩展 crop_x/y/w/h(d)+rotation(i)。
- */
+/* Implementation details. */
 #include "adaptor.h"
 #include "state.h"
 #include "log.h"
@@ -28,7 +14,7 @@
 #define IFACE_PROPERTIES "org.freedesktop.DBus.Properties"
 #define IFACE_INTROSPECT "org.freedesktop.DBus.Introspectable"
 #define IFACE_PEER       "org.freedesktop.DBus.Peer"
-#define SIG_PROPCHANGED  "propertiesChanged"            /* 小写 p —— 线协议关键! */
+#define SIG_PROPCHANGED  "propertiesChanged"            /* Implementation details. */
 
 #define ERR_FAILED "com.hasselblad.error.failed"
 #define ERR_PARAM  "com.hasselblad.error.parametererror"
@@ -37,21 +23,19 @@
 static DBusConnection *g_conn;
 static const prn_backend *g_be;
 
-/* ---------- 业务活动时间戳(闲置看门狗判据) ---------- */
+/* Implementation details. */
 static long long now_ms_a(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
-static long long g_last_activity;        /* start 时初始化 */
+static long long g_last_activity;        /* Implementation details. */
 
 void prn_adaptor_touch(void)             { g_last_activity = now_ms_a(); }
 long long prn_adaptor_idle_ms(void)      { return now_ms_a() - g_last_activity; }
 
-/* 相机系统服务合法 Wi-Fi 电源同步(com.hasselblad.system.power_on_wifi(b))
- * —— 经本服务已有总线连接发同步调用(2s 界, P0 呼吸预算), 恰一个 bool 实参
- * (QtDBus 槽签名严格匹配, 不带 odindb wrapper 的 timeout 尾参)。 */
+/* Implementation details. */
 int prn_adaptor_system_wifi_power(int on)
 {
     if (!g_conn) return -1;
@@ -68,24 +52,22 @@ int prn_adaptor_system_wifi_power(int on)
     DBusMessage *rep = dbus_connection_send_with_reply_and_block(g_conn, req, 2000, &e);
     dbus_message_unref(req);
     if (!rep) {
-        LOGW("power_on_wifi(%d) 调用失败: %s", on, e.message ? e.message : "?");
+        LOGW("Operation failed %d %s", on, e.message ? e.message : "?");
         dbus_error_free(&e);
         return -1;
     }
     if (dbus_message_get_type(rep) == DBUS_MESSAGE_TYPE_ERROR) {
-        LOGW("power_on_wifi(%d) 错误回复: %s", on,
+        LOGW("Operation failed %d %s", on,
              dbus_message_get_error_name(rep) ? dbus_message_get_error_name(rep) : "?");
         dbus_message_unref(rep);
         return -1;
     }
     dbus_message_unref(rep);
-    LOGI("power_on_wifi(%d) 合法电源同步 ok", on);
+    LOGI("Operation failed %d", on);
     return 0;
 }
 
-/* ---- 相机息屏超时属性(§19 显示层): org.freedesktop.DBus.Properties ----
- * 目标 com.hasselblad.system /system 属性 screen_idle_timeout(int, 秒);
- * Set 为标准 ssv(值封 variant int32); Get 回复 variant int32。 */
+/* Implementation details. */
 int prn_adaptor_screen_idle_set(int sec)
 {
     if (!g_conn) return -1;
@@ -113,12 +95,12 @@ int prn_adaptor_screen_idle_set(int sec)
     DBusMessage *rep = dbus_connection_send_with_reply_and_block(g_conn, req, 2000, &e);
     dbus_message_unref(req);
     if (!rep) {
-        LOGW("screen_idle_timeout Set(%d) 调用失败: %s", sec, e.message ? e.message : "?");
+        LOGW("Operation failed %d %s", sec, e.message ? e.message : "?");
         dbus_error_free(&e);
         return -1;
     }
     if (dbus_message_get_type(rep) == DBUS_MESSAGE_TYPE_ERROR) {
-        LOGW("screen_idle_timeout Set(%d) 错误回复: %s", sec,
+        LOGW("Operation failed %d %s", sec,
              dbus_message_get_error_name(rep) ? dbus_message_get_error_name(rep) : "?");
         dbus_message_unref(rep);
         return -1;
@@ -145,17 +127,17 @@ int prn_adaptor_screen_idle_get(int *sec)
     DBusMessage *rep = dbus_connection_send_with_reply_and_block(g_conn, req, 2000, &e);
     dbus_message_unref(req);
     if (!rep) {
-        LOGW("screen_idle_timeout Get 调用失败: %s", e.message ? e.message : "?");
+        LOGW("Operation failed %s", e.message ? e.message : "?");
         dbus_error_free(&e);
         return -1;
     }
     if (dbus_message_get_type(rep) == DBUS_MESSAGE_TYPE_ERROR) {
-        LOGW("screen_idle_timeout Get 错误回复: %s",
+        LOGW("Operation failed %s",
              dbus_message_get_error_name(rep) ? dbus_message_get_error_name(rep) : "?");
         dbus_message_unref(rep);
         return -1;
     }
-    /* 回复 = variant(int32) */
+    /* Implementation details. */
     DBusMessageIter it, sub;
     dbus_int32_t v = -1;
     int ok = 0;
@@ -169,14 +151,14 @@ int prn_adaptor_screen_idle_get(int *sec)
     }
     dbus_message_unref(rep);
     if (!ok) {
-        LOGW("screen_idle_timeout Get 回复格式异常(非 variant int32)");
+        LOGW("Operation failed");
         return -1;
     }
     *sec = (int)v;
     return 0;
 }
 
-/* ---------- 通用回复 ---------- */
+/* Implementation details. */
 static DBusHandlerResult reply_err(DBusConnection *c, DBusMessage *req,
                                    const char *name, const char *msg)
 {
@@ -196,7 +178,7 @@ static DBusHandlerResult reply_empty(DBusConnection *c, DBusMessage *req)
     return DBUS_HANDLER_RESULT_HANDLED;
 }
 
-/* ---------- 属性封送: 把 idx 属性的"裸值"追加到 iter(供 variant/GetAll 内层用) ---------- */
+/* Implementation details. */
 static const char *prop_signature(int idx)
 {
     switch (prn_prop_info_get(idx)->type) {
@@ -207,9 +189,7 @@ static const char *prop_signature(int idx)
     }
 }
 
-/* ---------- 属性封送: 把 idx 属性的"裸值"追加到 iter(供 variant/GetAll 内层用)
- * 防御性约定(HQ 管线 SIGSEGV 教训): 字符串一律判空兜底, 数组元素跳过 NULL 并告警,
- * 绝不让 NULL 到达 libdbus(strlen 崩溃)。 ---------- */
+/* Implementation details. */
 static const char *safe_str(const char *s)
 {
     return s ? s : "";
@@ -226,7 +206,7 @@ static void append_prop_value(DBusMessageIter *iter, int idx)
     } else if (prn_prop_info_get(idx)->type == 'b') {       /* synced/tx_active/caps_ready(§7b/§2b) */
         dbus_bool_t v = prn_get_int(idx) ? TRUE : FALSE;
         dbus_message_iter_append_basic(iter, DBUS_TYPE_BOOLEAN, &v);
-    } else {                                             /* as 数组: discovered_printers + 能力列表 */
+    } else {                                             /* Implementation details. */
         DBusMessageIter arr;
         dbus_message_iter_open_container(iter, DBUS_TYPE_ARRAY, "s", &arr);
         if (idx == PRN_DISCOVERED_PRINTERS) {
@@ -239,9 +219,7 @@ static void append_prop_value(DBusMessageIter *iter, int idx)
                 dbus_message_iter_append_basic(&arr, DBUS_TYPE_STRING, &st->discovered[i]);
             }
         } else {
-            /* 注意: items 是内联定长数组(char[N][96]), 必须先退化为 char* 再取址
-             * (直接 &items[i] 会被 libdbus 当 char** 解引用内容 → strlen 野指针段错误,
-             * discovered 是 char* 数组所以 &discovered[i] 恰好成立, 两者不可混写!) */
+            /* Implementation details. */
             const prn_strlist_t *l = prn_get_list(idx);
             if (!l) {
                 LOGW("marshal: list prop #%d NULL store, emit empty", idx);
@@ -256,7 +234,7 @@ static void append_prop_value(DBusMessageIter *iter, int idx)
     }
 }
 
-/* ---------- 属性变更信号(GUI match rule 命中点) ---------- */
+/* Implementation details. */
 void prn_adaptor_emit_changed(int prop_idx)
 {
     if (!g_conn) return;
@@ -277,20 +255,14 @@ void prn_adaptor_emit_changed(int prop_idx)
     dbus_message_iter_close_container(&entry, &v);
     dbus_message_iter_close_container(&arr, &entry);
     dbus_message_iter_close_container(&it, &arr);
-    dbus_message_iter_open_container(&it, DBUS_TYPE_ARRAY, "s", &inv);   /* a2: as 恒空 */
+    dbus_message_iter_open_container(&it, DBUS_TYPE_ARRAY, "s", &inv);   /* Implementation details. */
     dbus_message_iter_close_container(&it, &inv);
     dbus_connection_send(g_conn, sig, NULL);
     dbus_message_unref(sig);
     LOGD("signal propertiesChanged: %s", pi->name);
 }
 
-/* ---------- odindb-send-printer 兼容信号 rx/testrx(§7b) ----------
- * 接口=com.hasselblad.printer, path=/printer, 签名 "yay"(y=message_len, ay=message)。
- * 触发方: ① backend_real 打印任务状态机 job_status 每次变更发一帧 X2P 事件帧
- * (格式见 backend_real.c rj_emit_rx 注释); ② tx() 收到的字节原样回显(echo,
- * m_tx)。testrx 仍无内部触发方(自测试预留)。
- * 客户端 `odindb-send-printer -s printer --signal rx|testrx` 按 QtDBus 槽签名
- * 严格匹配, 故字节序/签名与补丁槽位(usbhost wrapper moc 表)逐字对齐。 */
+/* Implementation details. */
 static void emit_yay(const char *member, unsigned char len, const unsigned char *data, int n)
 {
     if (!g_conn) return;
@@ -330,8 +302,8 @@ static DBusHandlerResult handle_get_all(DBusConnection *c, DBusMessage *m)
         dbus_error_free(&e);
         return r;
     }
-    /* 注意: get_args 返回的 string 是报文内借用指针, 不能 free */
-    /* 标准语义: interface 不匹配返回空 dict(宽容处理 "" 与本服务名) */
+    /* Implementation details. */
+    /* Implementation details. */
     DBusMessage *rep = dbus_message_new_method_return(m);
     DBusMessageIter it, arr;
     dbus_message_iter_init_append(rep, &it);
@@ -360,12 +332,12 @@ static DBusHandlerResult handle_get(DBusConnection *c, DBusMessage *m)
     if (!dbus_message_iter_init(m, &args) ||
         dbus_message_iter_get_arg_type(&args) != DBUS_TYPE_STRING)
         return reply_err(c, m, "org.freedesktop.DBus.Error.InvalidArgs", "bad Get args");
-    dbus_message_iter_get_basic(&args, &iface_arg);            /* 指向报文内存, 无需 free */
+    dbus_message_iter_get_basic(&args, &iface_arg);            /* Implementation details. */
     dbus_message_iter_next(&args);
     if (dbus_message_iter_get_arg_type(&args) != DBUS_TYPE_STRING)
         return reply_err(c, m, "org.freedesktop.DBus.Error.InvalidArgs", "bad Get args");
     dbus_message_iter_get_basic(&args, &name);
-    (void)iface_arg;                                           /* 单接口服务, interface 忽略 */
+    (void)iface_arg;                                           /* Implementation details. */
 
     int idx = prn_prop_index(name);
     if (idx < 0) {
@@ -384,7 +356,7 @@ static DBusHandlerResult handle_get(DBusConnection *c, DBusMessage *m)
     return DBUS_HANDLER_RESULT_HANDLED;
 }
 
-/* Set(s interface, s name, v value) → 空回复; 只读/越界 → parametererror */
+/* Implementation details. */
 static DBusHandlerResult handle_set(DBusConnection *c, DBusMessage *m)
 {
     DBusMessageIter args, sub;
@@ -392,7 +364,7 @@ static DBusHandlerResult handle_set(DBusConnection *c, DBusMessage *m)
     if (!dbus_message_iter_init(m, &args) ||
         dbus_message_iter_get_arg_type(&args) != DBUS_TYPE_STRING)
         return reply_err(c, m, "org.freedesktop.DBus.Error.InvalidArgs", "bad Set args");
-    dbus_message_iter_get_basic(&args, &iface_arg);            /* interface 实参忽略(单接口服务) */
+    dbus_message_iter_get_basic(&args, &iface_arg);            /* Implementation details. */
     dbus_message_iter_next(&args);
     if (dbus_message_iter_get_arg_type(&args) != DBUS_TYPE_STRING)
         return reply_err(c, m, "org.freedesktop.DBus.Error.InvalidArgs", "bad Set args");
@@ -402,7 +374,7 @@ static DBusHandlerResult handle_set(DBusConnection *c, DBusMessage *m)
         return reply_err(c, m, "org.freedesktop.DBus.Error.InvalidArgs", "bad Set args");
     dbus_message_iter_recurse(&args, &sub);
 
-    prn_adaptor_touch();                                 /* 用户写属性=业务活动 */
+    prn_adaptor_touch();                                 /* Implementation details. */
     int idx = prn_prop_index(name);
     const prn_prop_info *pi = prn_prop_info_get(idx);
     if (!pi) {
@@ -415,7 +387,7 @@ static DBusHandlerResult handle_set(DBusConnection *c, DBusMessage *m)
         snprintf(msg, sizeof msg, "Property '%s' is read-only", pi->name);
         return reply_err(c, m, ERR_PARAM, msg);
     }
-    /* 签名校验: 线格式错=InvalidArgs; 语义错=parametererror */
+    /* Implementation details. */
     char want = pi->type;
     int got = dbus_message_iter_get_arg_type(&sub);
     if ((want == 'i' && got != DBUS_TYPE_INT32) ||
@@ -427,7 +399,7 @@ static DBusHandlerResult handle_set(DBusConnection *c, DBusMessage *m)
     if (want == 'i') {
         dbus_int32_t val;
         dbus_message_iter_get_basic(&sub, &val);
-        int rc = prn_set_int(idx, (int)val);                  /* 内部触发 notify→信号 */
+        int rc = prn_set_int(idx, (int)val);                  /* Implementation details. */
         if (rc == -2) {
             char msg[128];
             snprintf(msg, sizeof msg, "Value %d out of range for '%s'", (int)val, pi->name);
@@ -452,7 +424,7 @@ static DBusHandlerResult handle_set(DBusConnection *c, DBusMessage *m)
     return hr;
 }
 
-/* ---------- 业务方法(member=去 do 前缀) ---------- */
+/* Implementation details. */
 static const char *be_err_name(int code)
 {
     switch (code) {
@@ -463,7 +435,7 @@ static const char *be_err_name(int code)
 }
 static DBusHandlerResult reply_be_err(DBusConnection *c, DBusMessage *m, int code, const char *what)
 {
-    /* 后端若给出人类可读详情(格式协商失败原因等), 并入错误正文 */
+    /* Implementation details. */
     const char *detail = prn_be_last_error();
     char msg[192];
     if (detail && detail[0]) snprintf(msg, sizeof msg, "%s: %s", what, detail);
@@ -473,7 +445,7 @@ static DBusHandlerResult reply_be_err(DBusConnection *c, DBusMessage *m, int cod
     return reply_err(c, m, be_err_name(code), msg);
 }
 
-/* as 数组回复工具(元素调用方 free) */
+/* Implementation details. */
 static DBusHandlerResult reply_str_array(DBusConnection *c, DBusMessage *m, char **items, int n)
 {
     DBusMessage *rep = dbus_message_new_method_return(m);
@@ -516,11 +488,8 @@ static DBusHandlerResult m_connect_to_ap(DBusConnection *c, DBusMessage *m)
     return DBUS_HANDLER_RESULT_HANDLED;
 }
 
-/* Scan_wifi() → as(§20 v2.2: 元素 "SSID\tRSSI(dBm)\tSEC"; 结果同时进
- * scanned_networks 属性并 notify; 非 disconnected 态 → busy)
- * P0: 真后端返回 1=异步受理 —— 回复挂起(prn_adaptor_scan_complete 补发),
- * 事件循环期间照常呼吸; 线协议契约不变(阻塞至完成)。 */
-static DBusMessage *g_pending_scan;      /* 挂起的 Scan_wifi 回复(busy 门保证至多 1) */
+/* Implementation details. */
+static DBusMessage *g_pending_scan;      /* Implementation details. */
 
 static DBusHandlerResult m_scan_wifi(DBusConnection *c, DBusMessage *m)
 {
@@ -528,9 +497,9 @@ static DBusHandlerResult m_scan_wifi(DBusConnection *c, DBusMessage *m)
     int n = 0;
     int rc = g_be->scan_wifi(&items, &n);
     if (rc < 0) return reply_be_err(c, m, rc, "scan_wifi");
-    if (rc == 1) {                       /* 异步受理: 挂起回复, 扫描机完成后补发 */
+    if (rc == 1) {                       /* Implementation details. */
         g_pending_scan = dbus_message_ref(m);
-        LOGI("scan_wifi: 异步受理, 回复挂起至扫描完成");
+        LOGI("Operation completed");
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     DBusHandlerResult hr = reply_str_array(c, m, items, n);
@@ -555,13 +524,13 @@ void prn_adaptor_scan_complete(int ok)
         } else {
             reply_err(g_conn, m, ERR_FAILED, "oom");
         }
-        LOGI("scan_wifi: 挂起回复补发(%d 网络)", prn_state_get()->scanned.n);
+        LOGI("Operation failed %d", prn_state_get()->scanned.n);
     } else {
         const char *detail = prn_be_last_error();
         char msg[192];
         if (detail && detail[0]) snprintf(msg, sizeof msg, "scan_wifi: %s", detail);
         else snprintf(msg, sizeof msg, "%s", "scan_wifi failed");
-        LOGW("method scan_wifi failed(延迟): %s", msg);
+        LOGW("Operation failed %s", msg);
         reply_err(g_conn, m, ERR_FAILED, msg);
     }
     dbus_message_unref(m);
@@ -628,37 +597,32 @@ static DBusHandlerResult m_get_photo_list(DBusConnection *c, DBusMessage *m)
     return hr;
 }
 
-/* ---------- §18 选项字典解析与校验(Start_print_job / Preview_print 共用) ---------- */
+/* Implementation details. */
 
-/* 编辑参数数值校验: crop 四值 0..1 且 x+w≤1/y+h≤1(eps 容差), w/h>0,
- * rotation ∈ {-1,0,90,180,270}, NaN/Inf 拒绝。合法返回 NULL, 否则错误文案。 */
+/* Implementation details. */
 static const char *edit_opts_check(const prn_job_opts_t *o)
 {
     if (isnan(o->crop_x) || isnan(o->crop_y) || isnan(o->crop_w) || isnan(o->crop_h) ||
         isinf(o->crop_x) || isinf(o->crop_y) || isinf(o->crop_w) || isinf(o->crop_h))
-        return "opts.crop_* 含 NaN/Inf";
+        return "Operation failed";
     if (o->crop_x < 0.0 || o->crop_y < 0.0 || o->crop_x > 1.0 || o->crop_y > 1.0 ||
         o->crop_w <= 0.0 || o->crop_h <= 0.0 ||
         o->crop_x + o->crop_w > 1.0 + 1e-6 ||
         o->crop_y + o->crop_h > 1.0 + 1e-6)
-        return "opts.crop_* 越界(要求 0..1 且 x+w≤1, y+h≤1, w/h>0)";
+        return "Operation failed";
     if (o->rotation != -1 && o->rotation != 0 &&
         o->rotation != 90 && o->rotation != 180 && o->rotation != 270)
-        return "opts.rotation 取值必须是 -1/0/90/180/270";
+        return "Operation failed";
     return NULL;
 }
 
-/* 解析 args(已 iter_next 到 a{sv} 位置)的 opts 字典到 *opts(先调 opts_init)。
- * 键=IPP 关键字(copies/media/print-quality/print-color-mode/print-scaling)+
- * §18 编辑键(crop_x/crop_y/crop_w/crop_h=d, rotation=i); 未知键忽略(前向兼容)。
- * 字符串值为借用指针(报文内存, 调用期间有效)。
- * 返回 0=ok; -1=值类型不符(*badkey 回填); -2=编辑参数数值非法(*errmsg 回填)。 */
+/* Implementation details. */
 static void opts_init(prn_job_opts_t *opts)
 {
     memset(opts, 0, sizeof *opts);
     opts->crop_x = 0; opts->crop_y = 0;
-    opts->crop_w = 1; opts->crop_h = 1;             /* 默认全幅 */
-    opts->rotation = -1;                            /* 默认 EXIF 自动 */
+    opts->crop_w = 1; opts->crop_h = 1;             /* Implementation details. */
+    opts->rotation = -1;                            /* Implementation details. */
 }
 
 static int parse_opts_dict(DBusMessageIter *args, prn_job_opts_t *opts,
@@ -668,7 +632,7 @@ static int parse_opts_dict(DBusMessageIter *args, prn_job_opts_t *opts,
     *badkey = NULL;
     *errmsg = NULL;
     if (dbus_message_iter_get_arg_type(args) != DBUS_TYPE_ARRAY)
-        return 0;                                    /* 无 opts 字典=全默认 */
+        return 0;                                    /* Implementation details. */
     DBusMessageIter dict;
     dbus_message_iter_recurse(args, &dict);
     while (dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_DICT_ENTRY) {
@@ -718,19 +682,16 @@ static int parse_opts_dict(DBusMessageIter *args, prn_job_opts_t *opts,
             dbus_int32_t rv;
             dbus_message_iter_get_basic(&v, &rv);
             opts->rotation = (int)rv;
-        } /* 其余键: 忽略(前向兼容, 同 v1) */
+        } /* Implementation details. */
         dbus_message_iter_next(&dict);
     }
-    if (!copies_given) opts->copies = 0;              /* 0=后端取 copies 属性 */
+    if (!copies_given) opts->copies = 0;              /* Implementation details. */
     *errmsg = edit_opts_check(opts);
     if (*errmsg) return -2;
     return 0;
 }
 
-/* Start_print_job(as paths, a{sv} opts) → s job_id
- * v2: opts 键=IPP 关键字 copies(i)/media(s)/print-quality(s)/
- * print-color-mode(s)/print-scaling(s) + §18 编辑键 crop_x/y/w/h(d)/rotation(i);
- * 未提供=用属性当前值(编辑键默认全幅+EXIF 自动); 能力校验在后端。 */
+/* Implementation details. */
 static DBusHandlerResult m_start_print_job(DBusConnection *c, DBusMessage *m)
 {
     DBusMessageIter args;
@@ -755,7 +716,7 @@ static DBusHandlerResult m_start_print_job(DBusConnection *c, DBusMessage *m)
         return reply_err(c, m, ERR_PARAM, "empty paths");
     }
 
-    /* arg1: a{sv} opts —— 键=IPP 关键字 + §18 编辑键; 类型不符/数值非法→parametererror */
+    /* Implementation details. */
     prn_job_opts_t opts;
     opts_init(&opts);
     if (dbus_message_iter_next(&args)) {
@@ -786,11 +747,9 @@ static DBusHandlerResult m_start_print_job(DBusConnection *c, DBusMessage *m)
     return DBUS_HANDLER_RESULT_HANDLED;
 }
 
-/* ---------- §18 预览/裁切/旋转三方法 ---------- */
+/* Implementation details. */
 
-/* Get_photo_preview(s path, i max_w, i max_h) → s jpeg_path
- * 快速预览(FAST 管线无锐化, 长边≤max 默认 1024, EXIF 自动; 3FR=内嵌
- * preview 提取; 带缓存)。返回绝对路径, GUI 直接文件加载。 */
+/* Implementation details. */
 static DBusHandlerResult m_get_photo_preview(DBusConnection *c, DBusMessage *m)
 {
     DBusError e;
@@ -816,7 +775,7 @@ static DBusHandlerResult m_get_photo_preview(DBusConnection *c, DBusMessage *m)
     return DBUS_HANDLER_RESULT_HANDLED;
 }
 
-/* a{sv} 回复构造小工具 */
+/* Implementation details. */
 static void dict_i32(DBusMessageIter *arr, const char *k, dbus_int32_t v)
 {
     DBusMessageIter entry, w;
@@ -851,9 +810,7 @@ static void dict_i64(DBusMessageIter *arr, const char *k, dbus_int64_t v)
     dbus_message_iter_close_container(arr, &entry);
 }
 
-/* Get_photo_info(s path) → a{sv}
- * {width,height,orientation,rotated_width,rotated_height,has_jpeg,is_3fr,file_size}
- * 头部探测不解码像素; 3FR 的尺寸/orientation 基于内嵌 preview。 */
+/* Implementation details. */
 static DBusHandlerResult m_get_photo_info(DBusConnection *c, DBusMessage *m)
 {
     DBusError e;
@@ -887,10 +844,7 @@ static DBusHandlerResult m_get_photo_info(DBusConnection *c, DBusMessage *m)
     return DBUS_HANDLER_RESULT_HANDLED;
 }
 
-/* Preview_print(s path, a{sv} opts) → s jpeg_path
- * WYSIWYG: 与打印完全同管线(同 crop/rotation/media/scaling/HQ/锐化),
- * 输出 <preview>/job_<n>_preview.jpg(300dpi 元数据, 尺寸可从文件读)。
- * opts 键同 Start_print_job(copies 忽略)。 */
+/* Implementation details. */
 static DBusHandlerResult m_preview_print(DBusConnection *c, DBusMessage *m)
 {
     DBusMessageIter args;
@@ -904,7 +858,7 @@ static DBusHandlerResult m_preview_print(DBusConnection *c, DBusMessage *m)
     opts_init(&opts);
     if (dbus_message_iter_next(&args)) {
         const char *badkey = NULL, *errmsg = NULL;
-        int prc = parse_opts_dict(&args, &opts, 1 /*preview 无 copies 语义*/, &badkey, &errmsg);
+        int prc = parse_opts_dict(&args, &opts, 1 /* Implementation details. */, &badkey, &errmsg);
         if (prc != 0) {
             char msg[160];
             if (prc == -1)
@@ -937,20 +891,13 @@ static DBusHandlerResult m_cancel_job(DBusConnection *c, DBusMessage *m)
     return DBUS_HANDLER_RESULT_HANDLED;
 }
 
-/* ---------- odindb-send-printer 兼容方法 tx(§7b) ----------
- * wire: tx(y message_len, ay message) → 空回复(客户端回显 Ok)。
- * 语义: 原始调试字节管道 —— 收到即 LOGD 记录 hex(≤64B 全打)并回显 Ok,
- * 不下发给后端; 同时把收到的字节**原样回发一帧 rx(y,ay)(echo 模式)**,
- * 供 odindb CLI 自测环回(tx 发什么 rx 就收什么; 非 X2P 事件帧格式,
- * 打印任务的事件帧见 backend_real.c rj_emit_rx 注释)。
- * tx_active 属性在处理期间同步翻转 true→false(单线程服务, 各发一次
- * propertiesChanged, odindb 客户端 --signal all 可见)。 */
+/* Implementation details. */
 static DBusHandlerResult m_tx(DBusConnection *c, DBusMessage *m)
 {
     DBusError e;
     dbus_error_init(&e);
     unsigned char len = 0;
-    const unsigned char *payload = NULL;                 /* 借用报文内存, 无需 free */
+    const unsigned char *payload = NULL;                 /* Implementation details. */
     int plen = 0;
     if (!dbus_message_get_args(m, &e, DBUS_TYPE_BYTE, &len,
                                DBUS_TYPE_ARRAY, DBUS_TYPE_BYTE,
@@ -960,7 +907,7 @@ static DBusHandlerResult m_tx(DBusConnection *c, DBusMessage *m)
         return r;
     }
 
-    /* LOGD hex: ≤64B 全打, 更长的截断到 64B 并标注省略 */
+    /* Implementation details. */
     char hex[64 * 3 + 1];                                /* "41 42 ..." + NUL */
     int hi = 0;
     static const char HEXD[] = "0123456789ABCDEF";
@@ -971,18 +918,18 @@ static DBusHandlerResult m_tx(DBusConnection *c, DBusMessage *m)
     }
     hex[hi] = 0;
     LOGD("tx: len=%u payload=%d B [%s]%s", (unsigned)len, plen, hex,
-         plen > 64 ? " …(截断, 后续省略)" : "");
+         plen > 64 ? "Operation failed" : "");
 
-    prn_set_tx_active(1);                                /* 处理前置 true → 发信号 */
-    if (plen > 0) prn_adaptor_emit_rx(len, payload, plen); /* echo: 原样回显 rx */
-    prn_set_tx_active(0);                                /* 结束回 false → 再发信号 */
+    prn_set_tx_active(1);                                /* Implementation details. */
+    if (plen > 0) prn_adaptor_emit_rx(len, payload, plen); /* Implementation details. */
+    prn_set_tx_active(0);                                /* Implementation details. */
     return reply_empty(c, m);
 }
 
-/* 方法分发表: C 名带 do, wire member 不带 */
+/* Implementation details. */
 static DBusHandlerResult handle_methods(DBusConnection *c, DBusMessage *m)
 {
-    prn_adaptor_touch();                   /* 业务方法调用=看门狗活动信号 */
+    prn_adaptor_touch();                   /* Implementation details. */
     if (dbus_message_is_method_call(m, PRN_IFACE, "Connect_to_ap"))          return m_connect_to_ap(c, m);
     if (dbus_message_is_method_call(m, PRN_IFACE, "Scan_wifi"))              return m_scan_wifi(c, m);   /* §20 */
     if (dbus_message_is_method_call(m, PRN_IFACE, "Disconnect_and_restore")) return m_disconnect(c, m);
@@ -995,12 +942,12 @@ static DBusHandlerResult handle_methods(DBusConnection *c, DBusMessage *m)
     if (dbus_message_is_method_call(m, PRN_IFACE, "Get_photo_info"))        return m_get_photo_info(c, m);    /* §18 */
     if (dbus_message_is_method_call(m, PRN_IFACE, "Preview_print"))         return m_preview_print(c, m);    /* §18 */
     if (dbus_message_is_method_call(m, PRN_IFACE, "tx"))                    return m_tx(c, m); /* §7b */
-    if (dbus_message_has_destination(m, PRN_DEST))   /* 本接口未知方法按 odindb 归类 */
+    if (dbus_message_has_destination(m, PRN_DEST))   /* Implementation details. */
         return reply_err(c, m, ERR_FAILED, "No such method");
     return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
 
-/* ---------- 手工 Introspect XML(与 INTERFACE.md §6 一致) ---------- */
+/* Implementation details. */
 static const char INTROSPECTION_XML[] =
     "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\"\n"
     "\"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">\n"
@@ -1104,7 +1051,7 @@ static const char INTROSPECTION_XML[] =
     "  </interface>\n"
     "</node>\n";
 
-/* ---------- 对象过滤器总入口 ---------- */
+/* Implementation details. */
 static DBusHandlerResult obj_filter(DBusConnection *c, DBusMessage *m, void *data)
 {
     (void)data;
@@ -1130,7 +1077,7 @@ int prn_adaptor_start(DBusConnection *c, const prn_backend *be)
 {
     g_conn = c;
     g_be = be;
-    g_last_activity = now_ms_a();           /* 看门狗基准=服务启动时刻 */
+    g_last_activity = now_ms_a();           /* Implementation details. */
     /* {unregister, message, pad1..pad4} */
     static DBusObjectPathVTable vt = { NULL, obj_filter, NULL, NULL, NULL, NULL };
     if (!dbus_connection_register_object_path(c, PRN_PATH, &vt, NULL)) {

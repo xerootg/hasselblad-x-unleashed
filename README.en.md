@@ -2,7 +2,7 @@
 
 > A research project exploring and extending the in-camera capabilities of the Hasselblad X System.
 
-**English** · [简体中文](README.md)
+**English** · [Project README](README.md)
 
 ---
 

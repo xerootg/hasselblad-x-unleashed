@@ -49,8 +49,8 @@
 #define		UNLIKELY(x)					((x))
 #endif
 
-// XXX assertはNDEBUGが定義されていたら引数を含めて丸ごと削除されてしまうので
-// 関数実行を直接assertの引数にするとその関数はNDEBUGの時に実行されなくなるので注意
+// XXX When NDEBUG is defined, assert is removed entirely, including its arguments.
+// Beware: a function called directly as an assert argument will not execute with NDEBUG.
 #include <assert.h>
 #define CHECK(CONDITION) { bool RES = (CONDITION); assert(RES); }
 #define CHECK_EQ(X, Y) { bool RES = (X == Y); assert(RES); }

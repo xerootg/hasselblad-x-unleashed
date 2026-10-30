@@ -1,91 +1,99 @@
-/* backend.h — 后端接缝: 真实打印核心(阶段2, src/net/)与 mock 后端实现同一张函数表
- * 约定:
- *  - 返回值: 0=受理/成功, 负数=错误码(见 PRN_BE_*)
- *  - 后端通过 state.c 的 prn_set_ 系列与 prn_discovered_ 系列接口推进属性,
- *    notify 链自动广播 propertiesChanged —— 后端不碰 D-Bus
- *  - tick() 由主循环每次迭代调用(mock 用它推进模拟时钟; 真后端可为 NULL)
- *  - photo_list/start_print_job 返回的字符串数组/字符串由调用方 free
+/* backend.h — Backend seam: the real print core (phase 2, src/net/) and mock backend
+ * implement the same function table.
+ * Conventions:
+ *  - Return value: 0=accepted/success, negative=error code (see PRN_BE_*).
+ *  - The backend updates properties through state.c's prn_set_ and prn_discovered_
+ *    interfaces; the notify chain broadcasts propertiesChanged automatically. The backend
+ *    does not access D-Bus.
+ *  - tick() is called on every main-loop iteration (the mock uses it to advance simulated
+ *    time; it may be NULL for the real backend).
+ *  - The caller frees string arrays/strings returned by photo_list/start_print_job.
  */
 #ifndef PRN_BACKEND_H
 #define PRN_BACKEND_H
 
-/* 错误码 → adaptor 映射到 com.hasselblad.error.* */
+/* Error codes mapped by the adaptor to com.hasselblad.error.* */
 #define PRN_BE_FAILED  (-1)   /* com.hasselblad.error.failed */
 #define PRN_BE_PARAM   (-2)   /* com.hasselblad.error.parametererror */
 #define PRN_BE_BUSY    (-3)   /* com.hasselblad.error.busy */
 
-/* Start_print_job 选项(v2: 键=IPP 关键字, 值=打印机原生值; 0/NULL=用服务属性当前值)
- * adaptor 从 a{sv} opts 解析; 真后端透传前按能力校验。字符串为借用指针
- * (adaptor 保证调用期间有效)。
- * §18 编辑参数(INTERFACE.md v2.1 §3b, 裁切/旋转; 同样进 Preview_print):
- *   crop_*  归一化 0..1, 定义在**旋转后**的图上(GUI 预览坐标系), 默认 0,0,1,1=全幅;
- *   rotation -1=EXIF 自动(默认), 0/90/180/270 显式覆盖(不叠加 EXIF)。 */
+/* Start_print_job options (v2: keys are IPP keywords, values are native printer values;
+ * 0/NULL uses the current service property). The adaptor parses a{sv} opts; the real
+ * backend validates against capabilities before forwarding. Strings are borrowed pointers
+ * (the adaptor guarantees their validity for the duration of the call).
+ * §18 edit parameters (INTERFACE.md v2.1 §3b, crop/rotation; also used by Preview_print):
+ *   crop_* are normalized 0..1 and defined on the **rotated** image (GUI preview coordinates);
+ *   default 0,0,1,1 means full frame.
+ *   rotation -1=EXIF auto (default), 0/90/180/270 explicitly override (do not stack with EXIF). */
 typedef struct prn_job_opts {
-    int         copies;          /* ≤0 = 用 copies 属性 */
-    const char *media;           /* NULL = 用 media 属性 */
-    const char *print_quality;   /* NULL = 用 print_quality 属性; draft|normal|high */
-    const char *color_mode;      /* NULL = 用 color_mode 属性 */
-    const char *print_scaling;   /* NULL/"" = 不下发(交打印机默认) */
-    double      crop_x, crop_y, crop_w, crop_h;   /* 默认 0,0,1,1(全幅) */
-    int         rotation;                           /* 默认 -1(EXIF 自动) */
+    int         copies;          /* ≤0 = use copies property */
+    const char *media;           /* NULL = use media property */
+    const char *print_quality;   /* NULL = use print_quality property; draft|normal|high */
+    const char *color_mode;      /* NULL = use color_mode property */
+    const char *print_scaling;   /* NULL/"" = do not send (use printer default) */
+    double      crop_x, crop_y, crop_w, crop_h;   /* Default 0,0,1,1 (full frame) */
+    int         rotation;                           /* Default -1 (EXIF auto) */
 } prn_job_opts_t;
 
-/* doGet_photo_info 返回(源头 imgprep_probe, 不解码像素) */
+/* Return value for doGet_photo_info (from imgprep_probe; does not decode pixels) */
 typedef struct prn_photo_info {
-    int  width, height;          /* 存储尺寸(3FR=内嵌 preview 尺寸) */
-    int  orientation;            /* EXIF Orientation 1..8, 0=无 */
-    int  rotated_width, rotated_height; /* EXIF 折算后逻辑尺寸 */
-    int  has_jpeg;               /* 1=文件本身是 JPEG */
-    int  is_3fr;                 /* 1=哈苏 RAW(预览/打印走内嵌 preview) */
-    long file_size;              /* 文件字节数(3FR=RAW 本体) */
+    int  width, height;          /* Stored dimensions (3FR = embedded preview dimensions) */
+    int  orientation;            /* EXIF Orientation 1..8; 0 = none */
+    int  rotated_width, rotated_height; /* Logical dimensions after EXIF */
+    int  has_jpeg;               /* 1 = file itself is JPEG */
+    int  is_3fr;                 /* 1 = Hasselblad RAW (preview/print uses embedded preview) */
+    long file_size;              /* File size in bytes (3FR = RAW file itself) */
 } prn_photo_info_t;
 
 typedef struct prn_backend {
     const char *name;                                        /* "mock" / "real" */
-    void (*tick)(void);                                      /* 可 NULL */
-    void (*boot_init)(void);                                 /* 可 NULL: 总线就绪后一次性启动钩子
-                                                                (§19 崩溃恢复 + P1② 全残留清理) */
-    int  (*connect_to_ap)(const char *ssid, const char *psk);/* 受理即返回0, 异步走状态机 */
-    /* §20 扫描选择(INTERFACE.md v2.2): Wi-Fi 站点扫描;
-     * 仅 disconnected 态可扫(joining/joined/ready/discovering/扫描中 → PRN_BE_BUSY);
-     * 元素 "SSID\tRSSI(dBm)\tSEC"(SEC=wpa2|open, 隐藏网络跳过, 同 SSID 去重取最强,
-     * 按 RSSI 降序, ≤32 项), 调用方 free; 结果同步进 scanned_networks 属性(notify)。
-     * 返回: 0=同步完成(*out 与 *n 填好); **1=异步受理**(真后端——执行层在
-     * tick 机推进, adaptor 挂起方法回复至完成, prn_adaptor_scan_complete 补发,
-     * 线协议契约不变); 负=PRN_BE_*。 */
+    void (*tick)(void);                                      /* May be NULL */
+    void (*boot_init)(void);                                 /* Optional one-time startup hook once bus is ready
+                                                                (§19 crash recovery + P1② residue cleanup) */
+    int  (*connect_to_ap)(const char *ssid, const char *psk);/* Returns 0 on acceptance; state machine runs asynchronously */
+    /* §20 Wi-Fi network scan (INTERFACE.md v2.2):
+     * Only available in disconnected state (joining/joined/ready/discovering/scanning → PRN_BE_BUSY).
+     * Elements are "SSID\tRSSI(dBm)\tSEC" (SEC=wpa2|open); skip hidden networks, deduplicate
+     * SSIDs by strongest signal, sort by descending RSSI, max 32 items. Caller frees; results
+     * are also published to scanned_networks (notify).
+     * Returns: 0=completed synchronously (*out and *n are set); **1=accepted asynchronously**
+     * (real backend: execution advances in tick; adaptor holds the method reply until complete
+     * and prn_adaptor_scan_complete sends it; wire contract unchanged); negative=PRN_BE_*. */
     int  (*scan_wifi)(char ***out, int *n);
     int  (*disconnect_restore)(void);
-    /* 发现(v2.2 P0 语义): **受理即返** —— 返回 0 且 *out=NULL、*n=0(空 as),
-     * L1→L4 级联在 tick 状态机推进(单端点/窗口子进程 + 60s 总预算), 结果经
-     * discovered_printers 逐项 notify, 完成=connection_state 离开 discovering。 */
-    int  (*start_discovery)(char ***out, int *n);            /* 受理即返; 元素 "名字\tIP" */
-    int  (*select_printer)(const char *name);                /* 匹配 discovered 元素或名字部分;
-                                                                真后端: 探测能力+格式协商+发布能力属性 */
-    int  (*photo_list)(const char *path, char ***out, int *n);/* jpg/jpeg, ≤64 项 */
+    /* Discovery (v2.2 P0 semantics): **return on acceptance** — return 0 with *out=NULL,
+     * *n=0 (empty as). L1→L4 cascade advances in the tick state machine (one endpoint/window
+     * per subprocess + 60s total budget); publish each result via discovered_printers notify;
+     * completion is when connection_state leaves discovering. */
+    int  (*start_discovery)(char ***out, int *n);            /* Returns on acceptance; elements "name\tIP" */
+    int  (*select_printer)(const char *name);                /* Match a discovered element or partial name;
+                                                                real backend probes capabilities, negotiates format, publishes attributes */
+    int  (*photo_list)(const char *path, char ***out, int *n);/* jpg/jpeg, max 64 items */
     int  (*start_print_job)(char **paths, int npaths,
                             const prn_job_opts_t *opts,
-                            char **out_job_id);              /* 0=ok(*out_job_id=malloc 串), 负=PRN_BE_* */
-    int  (*cancel_job)(void);                                /* 1=已取消 0=无活动任务 */
-    /* ---- §18 预览/裁切/旋转(GUI 编辑页) ---- */
-    int  (*photo_info)(const char *path, prn_photo_info_t *out);        /* 头部探测 */
+                            char **out_job_id);              /* 0=ok (*out_job_id is malloc'd), negative=PRN_BE_* */
+    int  (*cancel_job)(void);                                /* 1=cancelled, 0=no active job */
+    /* ---- §18 Preview/crop/rotation (GUI editor) ---- */
+    int  (*photo_info)(const char *path, prn_photo_info_t *out);        /* Header probe */
     int  (*photo_preview)(const char *path, int max_w, int max_h,
-                          char **out_path);                 /* 快速预览(带缓存); *out_path malloc */
+                          char **out_path);                 /* Quick preview (cached); *out_path is malloc'd */
     int  (*preview_print)(const char *path, const prn_job_opts_t *opts,
-                          char **out_path);                 /* WYSIWYG: 与打印同管线; *out_path malloc */
+                          char **out_path);                 /* WYSIWYG: same pipeline as print; *out_path is malloc'd */
 } prn_backend;
 
-/* 后端失败详情(最近一次 PRN_BE_* 返回的人类解释, 空=无):
- * backend_real 强定义, mock_backend 弱定义兜底; adaptor 错误回复正文带出 */
+/* Human-readable details for the most recent PRN_BE_* backend error (empty = none):
+ * strongly defined by backend_real, weakly defined by mock_backend as a fallback; included
+ * in the adaptor's error reply body. */
 const char *prn_be_last_error(void)
 #if defined(__GNUC__)
 __attribute__((weak))
 #endif
 ;
 
-/* mock 后端(永远链接在服务里) */
+/* Mock backend (always linked into the service) */
 const prn_backend *prn_backend_mock(void);
 
-/* 真后端(阶段2 src/net/ 提供; 弱符号, 未实现时链接为 NULL → 自动回落 mock) */
+/* Real backend (provided by phase 2 src/net/; weak symbol, NULL if unimplemented → fall back to mock) */
 const prn_backend *prn_backend_real(void)
 #if defined(__GNUC__)
     __attribute__((weak))

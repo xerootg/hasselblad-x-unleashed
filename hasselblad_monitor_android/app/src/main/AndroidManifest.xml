@@ -7,7 +7,7 @@
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
 
     <application
-        android:label="监视器"
+        android:label="Monitor"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:allowBackup="false"
         tools:replace="android:allowBackup,android:label">
@@ -22,7 +22,7 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- 插入 UVC 设备自动拉起（免手动开 app） -->
+            <!-- Launch automatically when a UVC device is connected (no need to open the app manually) -->
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"/>
             </intent-filter>

@@ -45,11 +45,11 @@
 #define LOCAL_DEBUG 0
 
 #define LOG_TAG "libuvc/stream"
-#if 1	// デバッグ情報を出さない時1
+#if 1	// To suppress debug output: 1
 	#ifndef LOG_NDEBUG
-		#define	LOG_NDEBUG		// LOGV/LOGD/MARKを出力しない時
+		#define	LOG_NDEBUG		// To suppress LOGV/LOGD/MARK output
 		#endif
-	#undef USE_LOGALL			// 指定したLOGxだけを出力
+	#undef USE_LOGALL			// Output only the specified LOGx
 #else
 	#define USE_LOGALL
 	#undef LOG_NDEBUG
@@ -387,7 +387,7 @@ static uvc_error_t _prepare_stream_ctrl(uvc_device_handle_t *devh, uvc_stream_ct
 		if (LIKELY(!result)) {
 			result = uvc_query_stream_ctrl(devh, ctrl, 1, UVC_GET_MAX);		// probe query
 			if (UNLIKELY(result))
-				LOGE("uvc_query_stream_ctrl:UVC_GET_MAX:err=%d", result);	// XXX 最大値の方を後で取得しないとだめ
+				LOGE("uvc_query_stream_ctrl:UVC_GET_MAX:err=%d", result);	// XXX The maximum value must be retrieved later
 		} else {
 			LOGE("uvc_query_stream_ctrl:UVC_GET_MIN:err=%d", result);
 		}
@@ -588,7 +588,7 @@ uvc_error_t uvc_probe_stream_ctrl(uvc_device_handle_t *devh,
 		return err;
 	}
 
-	err = uvc_query_stream_ctrl(devh, ctrl, 1, UVC_GET_CUR);	// probe query ここでエラーが返ってくる
+	err = uvc_query_stream_ctrl(devh, ctrl, 1, UVC_GET_CUR);	// probe query returns an error here
 	if (UNLIKELY(err)) {
 		LOGE("uvc_query_stream_ctrl(UVC_GET_CUR):err=%d", err);
 		return err;
@@ -639,7 +639,7 @@ static void _uvc_delete_transfer(struct libusb_transfer *transfer) {
 		// Mark transfer as deleted.
 		for (i = 0; i < LIBUVC_NUM_TRANSFER_BUFS; i++) {
 			if (strmh->transfers[i] == transfer) {
-				libusb_cancel_transfer(strmh->transfers[i]);	// XXX 20141112追加
+				libusb_cancel_transfer(strmh->transfers[i]);	// XXX Added 20141112
 				UVC_DEBUG("Freeing transfer %d (%p)", i, transfer);
 				free(transfer->buffer);
 				libusb_free_transfer(transfer);
@@ -873,7 +873,7 @@ static inline void _uvc_process_payload_iso(uvc_stream_handle_t *strmh, struct l
 					continue;
 				}
 #ifdef USE_EOF
-				if ((strmh->fid != (header_info & UVC_STREAM_FID)) && strmh->got_bytes) {	// got_bytesを取ると殆ど画面更新されない
+				if ((strmh->fid != (header_info & UVC_STREAM_FID)) && strmh->got_bytes) {	// Removing got_bytes almost entirely prevents screen updates
 				/* The frame ID bit was flipped, but we have image data sitting
 	             around from prior transfers. This means the camera didn't send
     		     an EOF for the last transfer of the previous frame or some frames losted. */
@@ -1095,7 +1095,7 @@ static void _uvc_iso_callback(struct libusb_transfer *transfer) {
 						continue;
 					}
 #ifdef USE_EOF
-					if ((strmh->fid != (header_info & UVC_STREAM_FID)) && strmh->got_bytes) {	// got_bytesを取ると殆ど画面更新されない
+					if ((strmh->fid != (header_info & UVC_STREAM_FID)) && strmh->got_bytes) {	// Removing got_bytes almost entirely prevents screen updates
 					/* The frame ID bit was flipped, but we have image data sitting
 		             around from prior transfers. This means the camera didn't send
         		     an EOF for the last transfer of the previous frame or some frames losted. */

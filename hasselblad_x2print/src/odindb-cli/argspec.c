@@ -1,4 +1,4 @@
-/* argspec.c — CLI 参数 → D-Bus 类型编解码实现 */
+/* argspec.c — CLI argument → D-Bus type encoding/decoding implementation */
 #include "argspec.h"
 
 #include <ctype.h>
@@ -17,7 +17,7 @@ static void seterr_n(char *err, size_t errsz, const char *msg, long long n)
     if (err && errsz) snprintf(err, errsz, "%s (%lld)", msg, n);
 }
 
-/* ---------------- 位集枚举 ---------------- */
+/* ---------------- Bitmask enums ---------------- */
 int argspec_parse_bitset(const char *s, dbus_int32_t *out, char *err, size_t errsz)
 {
     dbus_int32_t v = 0;
@@ -35,7 +35,7 @@ int argspec_parse_bitset(const char *s, dbus_int32_t *out, char *err, size_t err
             }
             v |= (dbus_int32_t)x;
         } else {
-            /* E_Xxx 名分量: 需设备 HblmTypes 枚举表, 通用版未内置 */
+            /* E_Xxx name component: requires the device HblmTypes enum table, not included in generic build */
             seterr(err, errsz,
                    "enum name '%s' cannot be resolved (generic client has no "
                    "HblmTypes tables; use numeric values, e.g. E_A|E_B -> 1|2)", tok);
@@ -46,7 +46,7 @@ int argspec_parse_bitset(const char *s, dbus_int32_t *out, char *err, size_t err
     return 0;
 }
 
-/* ---------------- 基本类型 ---------------- */
+/* ---------------- Basic types ---------------- */
 static int enc_basic(DBusMessageIter *it, char t, const char *s,
                      char *err, size_t errsz)
 {
@@ -72,7 +72,7 @@ static int enc_basic(DBusMessageIter *it, char t, const char *s,
     case DBUS_TYPE_INT32: {
         dbus_int32_t v;
         if (strchr(s, '|') || (s[0] == 'E' && s[1] == '_')) {
-            if (argspec_parse_bitset(s, &v, err, errsz)) return -1; /* 位集枚举 → i32 */
+            if (argspec_parse_bitset(s, &v, err, errsz)) return -1; /* Bitmask enum → i32 */
         } else {
             char *end = NULL;
             long long x = strtoll(s, &end, 0);
@@ -146,7 +146,7 @@ static int enc_basic(DBusMessageIter *it, char t, const char *s,
     }
 }
 
-/* ---------------- JSON/列表小工具 ---------------- */
+/* ---------------- JSON/list helpers ---------------- */
 static char *trim(char *s)
 {
     while (isspace((unsigned char)*s)) s++;
@@ -155,7 +155,7 @@ static char *trim(char *s)
     return s;
 }
 
-/* 去掉首尾成对引号 */
+/* Remove a matching pair of surrounding quotes */
 static void unquote(char *s)
 {
     size_t n = strlen(s);
@@ -175,7 +175,7 @@ int argspec_is_json_object(const char *s)
     return s[0] == '{';
 }
 
-/* 在 s 内按顶层逗号切分(跳过引号串), 写 n 个起止偏移; 返回段数 */
+/* Split s at top-level commas (skip quoted strings), write n start/end offsets; return segment count */
 static int split_top(const char *s, size_t off[64][2], int max)
 {
     int n = 0, depth = 0, inq = 0;
@@ -195,14 +195,14 @@ static int split_top(const char *s, size_t off[64][2], int max)
     return n;
 }
 
-/* ay: 逗号/空白分隔的十六进制字节 */
+/* ay: comma/whitespace-separated hexadecimal bytes */
 static int enc_ay(DBusMessageIter *it, const char *s, char *err, size_t errsz)
 {
     DBusMessageIter arr;
     if (!dbus_message_iter_open_container(it, DBUS_TYPE_ARRAY,
                                           DBUS_TYPE_BYTE_AS_STRING, &arr))
         return -1;
-    if (!s[0]) goto done;             /* 空串 → 空数组 */
+    if (!s[0]) goto done;             /* Empty string → empty array */
     char buf[8192];
     snprintf(buf, sizeof buf, "%s", s);
     for (char *p = strtok(buf, ", \t"); p; p = strtok(NULL, ", \t")) {
@@ -220,7 +220,7 @@ done:
     return dbus_message_iter_close_container(it, &arr) ? 0 : -1;
 }
 
-/* as: ["a","b"] JSON 风格(原版 usage 示例) */
+/* as: ["a","b"] JSON style (as in original usage example) */
 static int enc_as(DBusMessageIter *it, const char *s, char *err, size_t errsz)
 {
     DBusMessageIter arr;
@@ -237,7 +237,7 @@ static int enc_as(DBusMessageIter *it, const char *s, char *err, size_t errsz)
     if (n >= sizeof buf) n = sizeof buf - 1;
     memcpy(buf, s, n);
     buf[n] = 0;
-    memmove(buf, buf + 1, n);         /* 去 '[' */
+    memmove(buf, buf + 1, n);         /* Remove '[' */
     char *rb = buf + strlen(buf);
     while (rb > buf && (rb[-1] == ']' || isspace((unsigned char)rb[-1]))) *--rb = 0;
     if (*buf) {
@@ -257,7 +257,7 @@ static int enc_as(DBusMessageIter *it, const char *s, char *err, size_t errsz)
     return dbus_message_iter_close_container(it, &arr) ? 0 : -1;
 }
 
-/* a{sv}: {"k":"v","n":42} JSON 风格(原版 usage 示例): 值 s/b/i/d */
+/* a{sv}: {"k":"v","n":42} JSON style (as in original usage example); values s/b/i/d */
 static int enc_asv(DBusMessageIter *it, const char *s, char *err, size_t errsz)
 {
     DBusMessageIter arr;
@@ -326,7 +326,7 @@ static int enc_asv(DBusMessageIter *it, const char *s, char *err, size_t errsz)
     return dbus_message_iter_close_container(it, &arr) ? 0 : -1;
 }
 
-/* a{i,u,x,d,n,q,t,y}: 逗号分隔数值(通用扩展) */
+/* a{i,u,x,d,n,q,t,y}: comma-separated numbers (generic extension) */
 static int enc_anum(DBusMessageIter *it, char elem, const char *s,
                     char *err, size_t errsz)
 {
@@ -348,7 +348,7 @@ done:
     return dbus_message_iter_close_container(it, &arr) ? 0 : -1;
 }
 
-/* v: 按文本形态自动判型 */
+/* v: infer type automatically from text form */
 static int enc_variant(DBusMessageIter *it, const char *s, char *err, size_t errsz);
 
 int argspec_encode(DBusMessageIter *it, const char *sig, const char *s,
@@ -382,7 +382,7 @@ static int enc_variant(DBusMessageIter *it, const char *s, char *err, size_t err
     return dbus_message_iter_close_container(it, &var) ? 0 : -1;
 }
 
-/* ---------------- 启发式类型推断(无自省签名时兜底) ---------------- */
+/* ---------------- Heuristic type inference (fallback when no introspection signature is available) ---------------- */
 static int all_digits(const char *s)
 {
     if (*s == '-' || *s == '+') s++;
@@ -411,7 +411,7 @@ static int looks_hexlist(const char *s)
 const char *argspec_guess(const char *s)
 {
     if (!strcasecmp(s, "true") || !strcasecmp(s, "false")) return "b";
-    if (s[0] == 'E' && s[1] == '_') return "i";        /* 位集/枚举 → i32 */
+    if (s[0] == 'E' && s[1] == '_') return "i";        /* Bitmask/enum → i32 */
     if (strchr(s, '|')) return "i";
     if (argspec_is_json_array(s)) return "as";
     if (argspec_is_json_object(s)) return "a{sv}";

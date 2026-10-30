@@ -1,7 +1,8 @@
-/* config.c — 最小 ini 解析/写出
- * 键表(INTERFACE.md §5 v2): ssid s | copies i | media s | print_quality s
+/* config.c — Minimal INI parser/writer
+ * Key table (INTERFACE.md §5 v2): ssid s | copies i | media s | print_quality s
  *                          | color_mode s | preset i
- * 解析规则: ;/# 注释, [节] 忽略内容, key=value 首 '=' 切分, 去空白, CRLF 容忍
+ * Parsing rules: ;/# comments, ignore [section] contents, split key=value at first '=',
+ * trim whitespace, accept CRLF.
  */
 #include "config.h"
 #include "state.h"
@@ -19,14 +20,17 @@ static char *trim(char *s)
     return s;
 }
 
-/* ---- 服务级扩展键(阶段2+): 非 D-Bus 属性, 载入捕获/保存回写 ----
- * printer_ip      : 已知打印机端点缓存(host[:port] 逗号分隔; 发现学得回写,
- *                   非空时 Start_discovery 直连快路径优先)
- * ipp_port        : IPP 端口(默认 631)
- * photo_root      : Get_photo_list 默认目录(空=相机默认 /mnt/media_runtime)
- * wifi_backend    : Connect_to_ap 执行层 "mock"(联调, 不碰 Wi-Fi)/"cam"(相机编排)
- * idle_restore_min: 闲置看门狗(分钟): joined/ready 且无任务无业务调用超过该值
- *                   自动恢复 Wi-Fi 基线并回 disconnected; 0=禁用; 缺省=5
+/* ---- Service-level extension keys (phase 2+): not D-Bus properties; loaded and saved ----
+ * printer_ip      : Cache of known printer endpoints (comma-separated host[:port]; updated
+ *                   with discovered endpoints; nonempty value gets priority in
+ *                   Start_discovery's direct-connection fast path)
+ * ipp_port        : IPP port (default 631)
+ * photo_root      : Default Get_photo_list directory (empty = camera default /mnt/media_runtime)
+ * wifi_backend    : Connect_to_ap execution layer: "mock" (integration testing, no Wi-Fi) /
+ *                   "cam" (camera orchestration)
+ * idle_restore_min: Idle watchdog (minutes): after this interval with no task or business
+ *                   call while joined/ready, automatically restore baseline Wi-Fi and
+ *                   return to disconnected; 0=disabled; default=5
  */
 typedef struct {
     const char *key;
@@ -40,7 +44,7 @@ static prn_extra_t g_extra[] = {
     { "idle_restore_min", "" },
 };
 
-static char g_cfg_path[300];              /* load 时记住, 供 set 原子落盘 */
+static char g_cfg_path[300];              /* Remembered by load for atomic save in set */
 
 const char *prn_config_get(const char *key)
 {
@@ -50,7 +54,8 @@ const char *prn_config_get(const char *key)
     return "";
 }
 
-/* 更新服务级扩展键并落盘(路径未知则仅内存); 0=ok, -1=未知键/IO 错 */
+/* Update a service-level extension key and save (memory-only if path is unknown);
+ * 0=ok, -1=unknown key/I/O error. */
 int prn_config_set(const char *key, const char *val)
 {
     if (!key || !val) return -1;
@@ -63,7 +68,7 @@ int prn_config_set(const char *key, const char *val)
     return -1;
 }
 
-/* 载入时捕获扩展键值; 返回 1=已识别 */
+/* Capture extension key/value while loading; returns 1=recognized */
 static int extra_load(const char *key, const char *val)
 {
     for (size_t i = 0; i < sizeof g_extra / sizeof g_extra[0]; i++) {
@@ -80,15 +85,15 @@ static void extra_write(FILE *f)
         fprintf(f, "%s = %s\n", g_extra[i].key, g_extra[i].val);
 }
 
-/* 写默认配置(首启) */
+/* Write default configuration (first launch) */
 static int write_default(const char *path)
 {
     FILE *f = fopen(path, "w");
     if (!f) { LOGE("config: create %s failed", path); return -1; }
-    fputs("; x2print printer-service 配置(自动生成)\n[printer]\n"
+    fputs("; x2print printer-service configuration (auto-generated)\n[printer]\n"
           "ssid =\ncopies = 1\nmedia =\nprint_quality = normal\n"
           "color_mode = auto\npreset = 0\n", f);
-    fputs("; 服务级扩展键(见 NOTES.md §10/§12 / config.h)\n", f);
+    fputs("; Service-level extension keys (see NOTES.md §10/§12 / config.h)\n", f);
     fputs("printer_ip =\nipp_port =\nphoto_root =\nwifi_backend =\n"
           "idle_restore_min = 5\n", f);
     fclose(f);
@@ -109,7 +114,7 @@ int prn_config_load(const char *path)
     while (fgets(line, sizeof line, f)) {
         char *s = trim(line);
         if (!*s || *s == ';' || *s == '#') continue;
-        if (*s == '[') continue;                       /* 节名仅注释性 */
+        if (*s == '[') continue;                       /* Section names are informational only */
         char *eq = strchr(s, '=');
         if (!eq) continue;
         *eq = 0;
@@ -141,7 +146,7 @@ int prn_config_save(const char *path)
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     FILE *f = fopen(tmp, "w");
     if (!f) { LOGE("config: save open %s failed", tmp); return -1; }
-    fprintf(f, "; x2print printer-service 配置(自动生成)\n[printer]\n"
+    fprintf(f, "; x2print printer-service configuration (auto-generated)\n[printer]\n"
                "ssid = %s\n"
                "copies = %d\n"
                "media = %s\n"
@@ -150,9 +155,9 @@ int prn_config_save(const char *path)
                "preset = %d\n",
             st->ssid, st->copies, st->media, st->print_quality,
             st->color_mode, st->preset);
-    extra_write(f);                                   /* 服务级扩展键原样回写 */
+    extra_write(f);                                   /* Write service-level extension keys back unchanged */
     if (fclose(f) != 0) { LOGE("config: close %s failed", tmp); return -1; }
-    if (rename(tmp, path) != 0) {                     /* 原子替换 */
+    if (rename(tmp, path) != 0) {                     /* Atomic replacement */
         remove(path);
         if (rename(tmp, path) != 0) { LOGE("config: rename %s failed", path); return -1; }
     }

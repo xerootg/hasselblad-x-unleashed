@@ -1,9 +1,9 @@
-/* colorcard - X2D II 屏幕色卡检测 (egltest 骨架 + evdev 任意键步进)
+/* colorcard - X2D II display color-card test (egltest skeleton + evdev any-key stepping)
  *
- * 全屏纯色逐张显示；按任意键(实体键/触摸/拨轮)切下一色；
- * 最后一张(黑)后再按键即退出，由外层 wrapper 恢复 GUI。
- * 屏幕上不画任何文字——色卡必须纯色才查得了坏点/色斑。
- * 颜色名打到 stderr 供 rsh 侧记录。
+ * Show full-screen solid colors in sequence; any key (physical/touch/dial) advances;
+ * a key press after the last card (black) exits; the outer wrapper restores the GUI.
+ * Draw no text on screen—cards must be solid colors to reveal bad pixels/color blotches.
+ * Print color names to stderr for logging on the rsh side.
  */
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
@@ -28,12 +28,12 @@ static struct wl_compositor *comp;
 static struct wl_shell *shell;
 static int have_comp, have_shell;
 
-/* ---- 输出枚举(后屏/EVF) ---- */
+/* ---- Output enumeration (rear screen/EVF) ---- */
 struct outinfo {
     struct wl_output *out;
     uint32_t name;
-    int32_t pw, ph;          /* 物理尺寸 mm */
-    int32_t w, h;            /* 当前模式 */
+    int32_t pw, ph;          /* Physical dimensions in mm */
+    int32_t w, h;            /* Current mode */
     int nmode;
     int have_mode;
 };
@@ -83,21 +83,21 @@ static const char *FS =
 
 typedef struct { const char *name; float r, g, b; } card_t;
 static const card_t cards[] = {
-    { "RED    纯红 255,0,0",       1.0f, 0.0f, 0.0f },
-    { "GREEN  纯绿 0,255,0",       0.0f, 1.0f, 0.0f },
-    { "BLUE   纯蓝 0,0,255",       0.0f, 0.0f, 1.0f },
-    { "CYAN   青 0,255,255",       0.0f, 1.0f, 1.0f },
-    { "MAGENTA 品红 255,0,255",    1.0f, 0.0f, 1.0f },
-    { "YELLOW 黄 255,255,0",       1.0f, 1.0f, 0.0f },
-    { "WHITE  白 255,255,255",     1.0f, 1.0f, 1.0f },
-    { "GRAY25 灰 64,64,64",        0.25f, 0.25f, 0.25f },
-    { "GRAY50 灰 128,128,128",     0.5f, 0.5f, 0.5f },
-    { "GRAY75 灰 191,191,191",     0.75f, 0.75f, 0.75f },
-    { "BLACK  黑 0,0,0 (退出色)",  0.0f, 0.0f, 0.0f },
+    { "RED    pure red 255,0,0",       1.0f, 0.0f, 0.0f },
+    { "GREEN  pure green 0,255,0",       0.0f, 1.0f, 0.0f },
+    { "BLUE   pure blue 0,0,255",       0.0f, 0.0f, 1.0f },
+    { "CYAN   cyan 0,255,255",       0.0f, 1.0f, 1.0f },
+    { "MAGENTA magenta 255,0,255",    1.0f, 0.0f, 1.0f },
+    { "YELLOW yellow 255,255,0",       1.0f, 1.0f, 0.0f },
+    { "WHITE  white 255,255,255",     1.0f, 1.0f, 1.0f },
+    { "GRAY25 gray 64,64,64",        0.25f, 0.25f, 0.25f },
+    { "GRAY50 gray 128,128,128",     0.5f, 0.5f, 0.5f },
+    { "GRAY75 gray 191,191,191",     0.75f, 0.75f, 0.75f },
+    { "BLACK  black 0,0,0 (exit color)",  0.0f, 0.0f, 0.0f },
 };
 #define NCARDS ((int)(sizeof cards / sizeof cards[0]))
 
-/* 灰阶序列: 纯黑 + 8bit 等值RGB 1/2/4/8/16/32(+64 对照) */
+/* Grayscale sequence: pure black + 8bit equal RGB 1/2/4/8/16/32 (+64 reference) */
 static int levels[] = { 0, 1, 2, 4, 8, 16, 32, 64 };
 #define NLEV ((int)(sizeof levels / sizeof levels[0]))
 static int gray_mode;
@@ -133,11 +133,11 @@ int main(int argc, char **argv) {
     struct wl_registry *reg = wl_display_get_registry(disp);
     wl_registry_add_listener(reg, &reg_l, NULL);
     wl_display_roundtrip(disp);
-    wl_display_roundtrip(disp);   /* 输出 geometry/mode 二段到达 */
+    wl_display_roundtrip(disp);   /* Output geometry/mode arrive in two stages */
     if (!have_comp || !shell) { fprintf(stderr, "colorcard: missing globals\n"); return 1; }
 
     fprintf(stderr, "colorcard: %d wl_output(s)\n", n_out);
-    /* 每个输出建一个全屏 surface(后屏+EVF 同时同色) */
+    /* Create a full-screen surface per output (rear screen+EVF show the same color) */
     struct { struct wl_surface *surf; struct wl_shell_surface *ss;
              struct wl_egl_window *win; EGLSurface es; int w, h; } S[MAX_OUT] = {{0}};
     int n_surf = 0;
@@ -154,7 +154,7 @@ int main(int argc, char **argv) {
         S[n_surf].w = w; S[n_surf].h = h;
         n_surf++;
     }
-    if (n_surf == 0) {   /* 没枚举到输出(异常兜底): 无目标全屏 */
+    if (n_surf == 0) {   /* No outputs enumerated (fallback): full-screen without a target */
         S[0].surf = wl_compositor_create_surface(comp);
         S[0].ss = wl_shell_get_shell_surface(shell, S[0].surf);
         wl_shell_surface_set_fullscreen(S[0].ss, 0, 0, NULL);
@@ -197,7 +197,7 @@ int main(int argc, char **argv) {
         float r, g, b; const char *nm;
         if (gray_mode) {
             int v = levels[idx];
-            nm = (v == 0) ? "BLACK  黑" : "GRAY";
+            nm = (v == 0) ? "BLACK  black" : "GRAY";
             r = g = b = v / 255.0f;
             fprintf(stderr, "colorcard: [%d/%d] %s level=%d (8bit %.4f) t=%llums\n",
                     idx + 1, total, nm, v, r, (unsigned long long)(now_ms() - t0));
@@ -208,7 +208,7 @@ int main(int argc, char **argv) {
                     idx + 1, total, nm, (unsigned long long)(now_ms() - t0));
         }
         fflush(stderr);
-        /* 持续渲染当前色到所有输出(~30fps)直到按键 */
+        /* Keep rendering the current color to all outputs (~30fps) until a key press */
         uint64_t t_last = now_ms();
         for (;;) {
             for (int i = 0; i < n_surf; i++) {
@@ -219,7 +219,7 @@ int main(int argc, char **argv) {
                 eglSwapBuffers(ed, S[i].es);
             }
             wl_display_flush(disp);
-            /* 非阻塞收一次输入 */
+            /* Poll input once without blocking */
             struct pollfd pf[MAX_DEV];
             struct input_event ev;
             int hit = 0;
@@ -237,13 +237,13 @@ int main(int argc, char **argv) {
             }
             if (hit) {
                 drain_inputs();
-                usleep(120 * 1000);   /* 等按键松开的事件也被吞掉 */
+                usleep(120 * 1000);   /* Wait so key-release events are also drained */
                 drain_inputs();
                 break;
             }
         }
         idx++;
-        if (idx >= total) break;   /* 最后一张显示完、按键 → 退出 */
+        if (idx >= total) break;   /* Key press after the last card → exit */
     }
     fprintf(stderr, "colorcard: all %d done, exit\n", total);
     eglMakeCurrent(ed, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);

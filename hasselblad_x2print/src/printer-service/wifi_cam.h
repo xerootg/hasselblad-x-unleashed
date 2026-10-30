@@ -1,81 +1,90 @@
-/* wifi_cam.h — 相机侧 Wi-Fi STA 编排(NOTES §15 真机实测路径, backend_real 执行层)
+/* wifi_cam.h — Camera-side Wi-Fi STA orchestration (NOTES §15 camera-tested path,
+ * backend_real execution layer)
  *
- * P0 反饿死重构(NOTES §22): 一切长命令(insmod/udhcpc/wpa_cli/iw/killall/rmmod)
- * 改 fork+exec 后台子进程, tick 里 waitpid(WNOHANG) 轮询 + 超时 SIGKILL ——
- * join/扫描/恢复三台状态机每次 step 只做「至多一次非阻塞轮询」, 主事件循环
- * 任何步骤间都可呼吸(D-Bus dispatch + 看门狗不停摆), 断开/取消可即时中断。
+ * P0 starvation-prevention refactor (NOTES §22): run all long commands
+ * (insmod/udhcpc/wpa_cli/iw/killall/rmmod) as fork+exec background subprocesses, poll with
+ * waitpid(WNOHANG) in tick, and SIGKILL on timeout.
+ * The join/scan/restore state machines perform at most one nonblocking poll per step, so the
+ * main event loop can run between every operation (D-Bus dispatch and watchdog remain active)
+ * and disconnect/cancel can interrupt immediately.
  *
- * join 阶段机(backend tick 每轮步进一次):
- *   wifi_cam_join_start(ssid, psk)  受理(0)/参数错(-1)
- *   wifi_cam_join_step()            0=joined 完成 / 1=进行中 / -1=失败(日志有细节)
- *   wifi_cam_join_phase()           人读阶段名(日志/观测)
+ * Join state machine (advanced once per backend tick):
+ *   wifi_cam_join_start(ssid, psk)  accepted (0) / invalid args (-1)
+ *   wifi_cam_join_step()            0=joined / 1=in progress / -1=failed (details in log)
+ *   wifi_cam_join_phase()           Human-readable phase name (for logs/monitoring)
  *
- * STA 序列(全部真机验证, X2D II + bcmdhd IAPSTA):
- *   1. 基线检测: /sys/class/net/wlan0 在? → 模块已载, 我们不拥有(绝不 rmmod);
- *      不在 → insmod /system/lib/modules/bcmdhd.ko(所有权=我们, 落 module.owned
- *      凭据; 恢复/下次启动 boot_cleanup 时 rmmod) — 3 次重试, 间隔 3s(SDIO 竞态)
+ * STA sequence (fully verified on camera, X2D II + bcmdhd IAPSTA):
+ *   1. Check baseline: does /sys/class/net/wlan0 exist? If yes, module is already loaded
+ *      and not owned by us (never rmmod it); otherwise insmod /system/lib/modules/bcmdhd.ko
+ *      (we own it; record module.owned marker; rmmod during restore/next-start boot_cleanup)
+ *      — retry 3 times, 3s apart (SDIO race).
  *   2. ifconfig wlan0 up
- *   3. 写 /data/x2print/wpa.conf(0600) → 自带静态 wpa_supplicant
- *      -B -Dnl80211 -i wlan0 -c ...(wl join 证死, 见 NOTES §14/§15)
- *   4. wpa_cli -p /data/x2print/wpasock status 轮询 wpa_state=COMPLETED(45s 预算)
- *   5. busybox udhcpc -i wlan0 -s <事件脚本> -n -q -t 4(取热点动态租约)
+ *   3. Write /data/x2print/wpa.conf (0600) → bundled static wpa_supplicant
+ *      -B -Dnl80211 -i wlan0 -c ... (`wl join` was conclusively ruled out; see NOTES §14/§15).
+ *   4. Poll `wpa_cli -p /data/x2print/wpasock status` for wpa_state=COMPLETED (45s budget).
+ *   5. Run `busybox udhcpc -i wlan0 -s <event-script> -n -q -t 4` (obtain dynamic hotspot lease).
  *
- * 扫描机(§20; 同为 tick 步进):
- *   wifi_cam_scan_begin()           受理(0)/环境错(-1)
- *   wifi_cam_scan_step(&out,&n)     0=完成(*out=malloc 列表, 元素
- *                                   "SSID\tRSSI(dBm)\tSEC", 调用方 free)
- *                                   1=进行中 / -1=失败
- *   芯片保障与 join 共用; 扫描后保持芯片可用不拆除(看门狗/restore 收尾)。
+ * Scan state machine (§20; also advanced by tick):
+ *   wifi_cam_scan_begin()           accepted (0) / environment error (-1)
+ *   wifi_cam_scan_step(&out,&n)     0=complete (*out=malloc'd list, entries
+ *                                   "SSID\tRSSI(dBm)\tSEC"; caller frees)
+ *                                   1=in progress / -1=failed
+ *   Chip setup is shared with join; keep chip available after scan (watchdog/restore cleans up).
  *
- * 恢复机(反序; 受理即返回, tick 推进至完成):
- *   wifi_cam_restore_begin()        先 abort 在途子进程/状态机, 再启动恢复序列
- *   wifi_cam_restore_step()         1=进行中 / 0=完成(幂等, 完成后重复调恒 0)
+ * Restore state machine (reverse order; returns on acceptance, tick advances to completion):
+ *   wifi_cam_restore_begin()        Abort in-flight subprocess/state machine, then start restoration
+ *   wifi_cam_restore_step()         1=in progress / 0=complete (idempotent; always 0 after completion)
  *
- * 中断:
- *   wifi_cam_abort()                断开/取消置位: 在途子进程立即 SIGKILL,
- *                                   join/扫描机就地复位(恢复机由 restore_begin 重启)
+ * Interrupt:
+ *   wifi_cam_abort()                Set on disconnect/cancel: SIGKILL in-flight subprocess
+ *                                   immediately; reset join/scan machine in place
+ *                                   (restore_begin starts the restore machine).
  *
- * 残留清理(P1②, NOTES §22):
- *   wifi_cam_boot_cleanup()         服务启动一次性(同步, 幂等): 按 pid 文件+pgrep
- *                                   自带路径杀陈旧 wpa_supplicant、按 module.owned
- *                                   凭据 rmmod、wlan0 地址 flush(仅凭据在案时,
- *                                   绝不动原生 AP 的 wlan0)。全程日志。
+ * Residue cleanup (P1②, NOTES §22):
+ *   wifi_cam_boot_cleanup()         One-time service-start cleanup (synchronous, idempotent):
+ *                                   kill stale bundled wpa_supplicant by pid file + pgrep,
+ *                                   rmmod only when module.owned marker exists, flush wlan0
+ *                                   address only when marker exists (never disturb native AP
+ *                                   wlan0). Log all actions.
  *
- * 恢复序列(反序): wpa_cli terminate → killall → ip addr flush dev wlan0 →
- *   ifconfig wlan0 down → rmmod bcmdhd(仅当我们 insmod 过, 凭据随之清除)。
+ * Restore sequence (reverse order): wpa_cli terminate → killall → ip addr flush dev wlan0 →
+ *   ifconfig wlan0 down → rmmod bcmdhd (only if we insmod'ed it; clear ownership marker).
  *
- * psk 安全: 只落 /data/x2print/psk 与 wpa.conf(均 chmod 0600),
- *   不进 D-Bus 属性 / 不进命令行(ps 可见) / 不进日志。
+ * PSK security: store only in /data/x2print/psk and wpa.conf (both chmod 0600);
+ *   never in D-Bus properties / command line (visible via ps) / logs.
  */
 #ifndef PRN_WIFI_CAM_H
 #define PRN_WIFI_CAM_H
 
-/* join 阶段机: start 受理后由 tick 反复调 step 直到 0/-1 */
-int  wifi_cam_join_start(const char *ssid, const char *psk); /* 0=受理, -1=参数/环境错 */
-int  wifi_cam_join_step(void);  /* 0=joined, 1=进行中, -1=失败 */
-const char *wifi_cam_join_phase(void);                       /* 当前阶段名(静态串) */
+/* Join state machine: after start is accepted, tick calls step repeatedly until 0/-1 */
+int  wifi_cam_join_start(const char *ssid, const char *psk); /* 0=accepted, -1=invalid args/environment */
+int  wifi_cam_join_step(void);  /* 0=joined, 1=in progress, -1=failed */
+const char *wifi_cam_join_phase(void);                       /* Current phase name (static string) */
 
-/* §20 SSID 扫描选择(tick 步进): 结果元素 "SSID\tRSSI(dBm)\tSEC",
- * SEC=wpa2|open; 隐藏网络跳过, 同 SSID 去重取最强, RSSI 降序, ≤32 项。 */
-int  wifi_cam_scan_begin(void);                       /* 0=受理, -1=环境错 */
-int  wifi_cam_scan_step(char ***out, int *n);         /* 0=完成 1=进行中 -1=失败 */
+/* §20 SSID scan/selection (advanced by tick): result entries "SSID\tRSSI(dBm)\tSEC",
+ * SEC=wpa2|open; skip hidden networks, deduplicate SSIDs by strongest signal, sort by
+ * descending RSSI, max 32 items. */
+int  wifi_cam_scan_begin(void);                       /* 0=accepted, -1=environment error */
+int  wifi_cam_scan_step(char ***out, int *n);         /* 0=complete, 1=in progress, -1=failed */
 
-/* 反序恢复相机 Wi-Fi 基线(异步步进, 幂等): 任何中间态调用都收敛; 尽力而为 */
+/* Restore camera baseline Wi-Fi in reverse order (async steps, idempotent):
+ * converges from any intermediate state; best effort. */
 void wifi_cam_restore_begin(void);
-void wifi_cam_psk_purge(void);   /* 会话/崩溃残留 psk 清理 */
-int  wifi_cam_restore_step(void);                     /* 1=进行中 0=完成 */
+void wifi_cam_psk_purge(void);   /* Remove PSK residue from session/crash */
+int  wifi_cam_restore_step(void);                     /* 1=in progress, 0=complete */
 
-/* 中断位(Disconnect_and_restore/Cancel_job 置位): 在途子进程立即终结 */
+/* Interrupt (set by Disconnect_and_restore/Cancel_job): terminate in-flight subprocess immediately */
 void wifi_cam_abort(void);
 
-/* 启动残留清理(P1②): 同步一次性, 幂等, 全程日志; 非 camera 环境无操作 */
+/* Startup residue cleanup (P1②): synchronous, one-shot, idempotent, fully logged;
+ * no-op outside camera environment. */
 int  wifi_cam_boot_cleanup(void);
 
-/* 会话 wakelock(NOTES §19): join 受理起持有(内核命名锁 x2print-session,
- * /sys/power/wake_lock) —— 相机待机(autosleep 无锁即挂)会冻结 camera-system
- * 异步电源序列(power_on_wifi「受理但不起」)与 STA 链路; 恢复完成时由
- * backend_real 在合法电源同步之后释放, 服务启动时 release 一次清崩溃残留。
- * 非相机环境(WSL)为无操作桩。 */
+/* Session wakelock (NOTES §19): hold from join acceptance (kernel named lock
+ * x2print-session, /sys/power/wake_lock). Camera standby (autosleep suspends without a lock)
+ * would freeze camera-system async power sequence (power_on_wifi is "accepted but does not
+ * start") and STA link. backend_real releases after legal power sync completes; release once
+ * at service startup to clear crash residue. No-op stub outside camera environment (WSL). */
 void wifi_cam_wake_hold(void);
 void wifi_cam_wake_release(void);
 

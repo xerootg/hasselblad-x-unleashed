@@ -1,18 +1,18 @@
-# UVCMonitor Android — X2D II 外接监视器（安卓显示端）
+# UVCMonitor Android — X2D II External Monitor (Android Display)
 
-## 功能
+## Features
 
-斑马纹(阈值滑杆) / 假彩色(9段) / 峰值对焦(Sobel染红,灵敏度滑杆) / RGB直方图(NV21抽样0.5s一更) / 网格(三分对角中心黄金) / 画幅遮罩(16:9 4:3 1:1 **65:24** 3:2) / 黑白 / 数字变焦1-8×(捏合+拖拽,双击复位) / 冻结帧 / 截图存相册(MediaStore免权限) / 顶栏HUD(设备名=USB iProduct/格式/实测fps) / 单击收起UI / 插入UVC设备自动拉起app(device_filter)。
+Zebra stripes(threshold slider) / False color(9 bands) / Focus peaking(Sobel red highlights,sensitivity slider) / RGB histogram(NV21 sampling,updated every 0.5s) / Grid(rule of thirds,diagonals,center,golden ratio) / Aspect ratio mask(16:9 4:3 1:1 **65:24** 3:2) / Monochrome / Digital zoom 1-8×(pinch+drag,double-tap to reset) / Freeze frame / Save screenshots to gallery(MediaStore,no permission required) / Top-bar HUD(device name=USB iProduct/format/measured fps) / Tap to hide UI / Automatically launch app when a UVC device is connected(device_filter).
 
-## 架构
+## Architecture
 
 ```
 app/src/main/java/com/x2dii/uvcmonitor/
-  MainActivity.kt   入口 + 状态 + 监听回调
-  UvcEngine.kt      UsbManager(权限/热插拔) + UVCCamera(YUYV/MJPEG→NV21帧回调) + fps/直方图/截图
-  GlRenderer.kt     GLSurfaceView + GLSL ES2 单pass（NV21双平面→RGB + 变焦/峰值/黑白/斑马/假彩）
-  Ui.kt             Compose 全套 UI（顶栏/工具栏/滑杆/overlay/手势/直方图）
-  MonitorSettings.kt 状态 + 枚举
+  MainActivity.kt   Entry point + state + listener callbacks
+  UvcEngine.kt      UsbManager(permissions/hotplug) + UVCCamera(YUYV/MJPEG→NV21 frame callbacks) + fps/histogram/screenshots
+  GlRenderer.kt     GLSurfaceView + GLSL ES2 single pass (NV21 dual planes→RGB + zoom/peaking/monochrome/zebra/false color)
+  Ui.kt             Complete Compose UI (top bar/toolbar/sliders/overlay/gestures/histogram)
+  MonitorSettings.kt State + enums
 app/src/main/java/com/serenegiant/utils/
-  HandlerThreadHandler.java / BuildCheck.java   ← 补丁类（见下）
+  HandlerThreadHandler.java / BuildCheck.java   ← Compatibility classes (see below)
 ```

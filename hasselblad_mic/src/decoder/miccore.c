@@ -4486,10 +4486,10 @@ static int tx_connect(struct mic_tx *tx)
         schedule_after_pair(tx);
         return 0;
     }
-    /* 316: TX enters via HFP -> native 特判 -> SPP.  Two paths:
+    /* 316: TX enters via HFP -> native special-case handling -> SPP.  Two paths:
      * (a) TX dials in on its own (boot / wake / pairing window)
      * (b) We dial the TX's HF endpoint via app_ag_open -> SLC ->
-     *     特判 evt fires -> AgClose + DgOpen -> SPP -> streaming
+     *     special-case evt fires -> AgClose + DgOpen -> SPP -> streaming
      * Give the native branch a bounded window. Any later SPP request
      * must reuse its existing/pending slot instead of opening it twice. */
     if (p_hfp_set_enable) {
@@ -4498,7 +4498,7 @@ static int tx_connect(struct mic_tx *tx)
     }
     if (p_ag_open) {
         int ag = p_ag_open(tx->cfg_bd);
-        mlog("connect: app_ag_open(bd) = %d (HFP engage -> 特判)", ag);
+        mlog("connect: app_ag_open(bd) = %d (HFP engage -> special-case handling)", ag);
         if (ag != 0) return tx_request_spp(tx, "HFP rejected");
         tx->kick_stage = 3;
         tx->kick_tries = 1;
@@ -4561,7 +4561,7 @@ static int tx_disconnect(struct mic_tx *tx)
 
     /* v5: do NOT tell the TX to sleep on a plain disconnect.  The product
      * 0x54/0x20 standby notice (announce_sleep_0x54_20) puts the TX into
-     * a state that app_ag_open/the 特判 can no longer wake over the still
+     * a state that app_ag_open/the special-case handler can no longer wake over the still
      * -live ACL -- the root cause of "click disconnect, then connect the
      * paired device fails" (live 10-04 06:3x: ACL status=0 but app_ag_open
      * re-engage=1004, 30 s timeout -> idle).  Disconnect now only tears

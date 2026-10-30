@@ -401,14 +401,14 @@ static int parse_association(struct libusb_context *ctx,
 			 size, LIBUSB_DT_HEADER_SIZE/*DESC_HEADER_LENGTH*/);
 		RETURN(LIBUSB_ERROR_IO, int);
 	}
-	// ディスクリプタの先頭2バイトだけ解析して長さとディスクリプタの種類を取得
+	// Parse only the first 2 bytes of the descriptor to obtain its length and type
 	usbi_parse_descriptor(buffer, "bb", &header, 0);
-	if UNLIKELY(header.bDescriptorType != LIBUSB_DT_ASSOCIATION) {	// 種類が違う時
+	if UNLIKELY(header.bDescriptorType != LIBUSB_DT_ASSOCIATION) {	// If the type differs
 		usbi_err(ctx, "unexpected descriptor %x (expected %x)",
 			header.bDescriptorType, LIBUSB_DT_ASSOCIATION);
 		RETURN(parsed, int);	// return 0;
 	}
-	if UNLIKELY(header.bLength > size) {	// IADに長さが足りない時
+	if UNLIKELY(header.bLength > size) {	// If there are not enough bytes for the IAD
 		usbi_warn(ctx, "short association descriptor read %d/%d",
 			  size, header.bLength);
 		RETURN(parsed, int);	// return 0;
@@ -437,16 +437,16 @@ static int parse_association(struct libusb_context *ctx,
 			LOGI("\t association:iFunction=%d", association->iFunction);
 #endif
 		} else {
-			// 解析に失敗した時は未使用部分を削除
+			// Remove the unused portion if parsing fails
 			config->association_descriptor = usbi_reallocf(association,
 				sizeof(struct libusb_association_descriptor) * config->num_associations);
 		}
 	} else {
-		// 種類はIADで有るにも関わらず長さが足りない時
+		// If the type is IAD but the length is insufficient
 		usbi_err(ctx, "invalid interface association descriptor bLength (%d)", header.bLength);
 		RETURN(LIBUSB_ERROR_IO, int);
 	}
-	// 次の解析開始位置・残りサイズをセット
+	// Set the next parsing position and remaining size
 	buffer += header.bLength;
 	size -= header.bLength;
 	parsed += header.bLength;
@@ -561,10 +561,10 @@ static int parse_configuration(struct libusb_context *ctx,
 		usbi_err(ctx, "too many interfaces (%d)", config->bNumInterfaces);
 		RETURN(LIBUSB_ERROR_IO, int);
 	}
-	// インターフェースディスクリプタ配列を確保(長さはconfig->bNumInterfaces)
+	// Allocate the interface descriptor array (length is config->bNumInterfaces)
 	tmp = config->bNumInterfaces * sizeof(struct libusb_interface);
 	config->interface = usb_interface = malloc(tmp);
-	// インターフェースディスクリプタ配列を確保できなかった
+	// Could not allocate the interface descriptor array
 	if UNLIKELY(!config->interface)
 		RETURN(LIBUSB_ERROR_NO_MEM, int);
 
